@@ -1,16 +1,16 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 // MM2K (Muscle Media 2000) Bench Program - 6 weeks, 14 workouts
 // Single-file React app (App.jsx). Tailwind classes used for styling.
-// Highlights in this version:
+// Features:
 // - Local-first profiles (simple "login") with optional PIN, stored in localStorage
-// - Multiple lifters (users) per profile
-// - Program structure exactly 14 pass inkl. Failure/Negative/Single/Max
-// - Weights in KG (rounded to user step); FT-adjustments ±2.5 kg (≈5 lb)
-// - "Bekräfta" på Failure Test auto-markeras klart (låser snapshot)
-// - Default-loggning om du inte fyllt i set/reps vid Bekräfta/Klart
-// - Prognos i profilen baserad på MM2K: base goal ≈ 115% av start‑1RM i #14 + FT‑delta
-// - Kontraststarka knappar, enhetliga knappar (Export/Import), större emoji‑ikon och 🎉‑toast vid lyckat Failure Test
+// - Multiple lifters (users) inside each profile
+// - Workout plan matching MM2K structure: 14 workouts with failure tests and negative-only days
+// - Weights in KG (percent approximation calibrated to MM2K examples)
+// - Set/reps logging, mark workout done (locks that workout so later 1RM changes do not alter past data)
+// - Failure Test confirm panel proposes +/-2.5 kg change; no auto change without confirm
+// - Projected end-of-cycle 1RM range shown in profile card
+// - Export/Import profile data (JSON)
 
 /************************
  * Local storage helpers *
@@ -21,12 +21,38 @@ const LEGACY_USERS_KEY = "mm2k_users_v1";             // old global users store
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
 
-function getUsersStorageKey(accountId) { return `mm2k_users_v1_${accountId || "default"}`; }
-function loadAccounts() { try { const raw = localStorage.getItem(ACCOUNTS_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; } catch { return []; } }
+function getUsersStorageKey(accountId) {
+  return `mm2k_users_v1_${accountId || "default"}`;
+}
+
+function loadAccounts() {
+  try { const raw = localStorage.getItem(ACCOUNTS_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; } catch { return []; }
+}
 function saveAccounts(accounts) { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts)); }
-function migrateLegacyUsersIfAny(accountId) { try { const legacy = localStorage.getItem(LEGACY_USERS_KEY); const key = getUsersStorageKey(accountId); if (legacy && !localStorage.getItem(key)) { localStorage.setItem(key, legacy); } } catch {} }
-function loadUsersForAccount(accountId) { try { if (!accountId) return []; migrateLegacyUsersIfAny(accountId); const raw = localStorage.getItem(getUsersStorageKey(accountId)); const parsed = raw ? JSON.parse(raw) : []; return Array.isArray(parsed) ? parsed : []; } catch { return []; } }
-function saveUsersForAccount(accountId, users) { if (!accountId) return; localStorage.setItem(getUsersStorageKey(accountId), JSON.stringify(users)); }
+
+function migrateLegacyUsersIfAny(accountId) {
+  try {
+    const legacy = localStorage.getItem(LEGACY_USERS_KEY);
+    const key = getUsersStorageKey(accountId);
+    if (legacy && !localStorage.getItem(key)) {
+      localStorage.setItem(key, legacy);
+    }
+  } catch {}
+}
+
+function loadUsersForAccount(accountId) {
+  try {
+    if (!accountId) return [];
+    migrateLegacyUsersIfAny(accountId);
+    const raw = localStorage.getItem(getUsersStorageKey(accountId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+function saveUsersForAccount(accountId, users) {
+  if (!accountId) return;
+  localStorage.setItem(getUsersStorageKey(accountId), JSON.stringify(users));
+}
 
 /***********************************
  * Program structure (14 workouts)  *
@@ -49,42 +75,44 @@ const WORKOUTS = [
 ];
 
 /*********************************************
- * Percent progression tuned to MM2K outcome *
- * Aim: #14 peak ≈ 115% of start 1RM, negatives >110%.
+ * Percent approximation of MM2K progression *
  *********************************************/
 function getPercentsForWorkout(w) {
-  const P = {
-    1:  [0.60, 0.70, 0.80],
-    2:  [0.70, 0.80, 0.90],      // single-dag (single weight ~p3)
-    3:  [0.65, 0.75, 0.85],
-    4:  [0.75, 0.85, 1.00],      // single-dag
-    5:  [0.70, 0.80, 0.85],      // Failure Test (använder p2)
-    6:  [0.85, 0.95, 1.10],      // Negative ~110%
-    7:  [0.75, 0.85, 0.90],      // Failure Test
-    8:  [0.90, 0.97, 1.12],      // Negative ~112%
-    9:  [0.76, 0.88, 0.92],      // Failure Test
-    10: [0.92, 0.98, 1.13],      // Negative ~113%
-    11: [0.78, 0.90, 0.95],      // Failure Test
-    12: [0.95, 1.00, 1.05],      // single-dag
-    13: [0.80, 0.92, 0.97],      // Failure Test
-    14: [1.00, 1.08, 1.15],      // Max-test ≈115% av start
-  };
-  return P[w] || [0.7, 0.8, 0.9];
+  switch (w) {
+    case 1:  return [0.66, 0.74, 0.793];
+    case 2:  return [0.724, 0.81, 0.897];
+    case 3:  return [0.68, 0.76, 0.81];
+    case 4:  return [0.76, 0.86, 0.94];
+    case 5:  return [0.74, 0.845, 0.845];
+    case 6:  return [0.83, 0.92, 1.08];
+    case 7:  return [0.75, 0.86, 0.86];
+    case 8:  return [0.86, 0.95, 1.10];
+    case 9:  return [0.76, 0.875, 0.875];
+    case 10: return [0.88, 0.97, 1.12];
+    case 11: return [0.77, 0.89, 0.89];
+    case 12: return [0.92, 0.98, 1.00];
+    case 13: return [0.78, 0.905, 0.905];
+    case 14: return [0.95, 1.00, 1.02];
+    default: return [0.7, 0.8, 0.9];
+  }
 }
 
-const KG_STEP_DEFAULT = 2.5; // you can change per user
+const KG_STEP_DEFAULT = 2.5;
 function roundToStep(value, step = KG_STEP_DEFAULT) { if (!Number.isFinite(value)) return 0; return Math.round(value / step) * step; }
 function kg(v) { return Number.isFinite(v) ? v : 0; }
 
-function buildWorkoutPrescription(workoutId, workingRmKg, rounding = KG_STEP_DEFAULT) {
+function buildWorkoutPrescription(workoutId, oneRmKg, rounding = KG_STEP_DEFAULT) {
   const [p1, p2, p3] = getPercentsForWorkout(workoutId);
   const blocks = WORKOUTS.find(w => w.id === workoutId)?.blocks || [];
-  const weights = [ roundToStep(kg(workingRmKg) * p1, rounding), roundToStep(kg(workingRmKg) * p2, rounding), roundToStep(kg(workingRmKg) * p3, rounding) ];
+  const weights = [ roundToStep(kg(oneRmKg) * p1, rounding), roundToStep(kg(oneRmKg) * p2, rounding), roundToStep(kg(oneRmKg) * p3, rounding) ];
   const rows = [];
   blocks.forEach((b, i) => {
-    const base = (b.kind === "failure" ? weights[1] : weights[i]); // FT använder p2‑vikten
+    // Failure test should always use block #2 weight (p2)
+    const base = (b.kind === "failure" ? weights[1] : weights[i]);
     const label = b.kind === "failure" ? "Failure Test" : b.kind === "negative" ? "Negative only" : b.kind === "max" ? "Max Test" : b.kind === "single" ? "Single" : "Work";
-    for (let s = 0; s < b.sets; s++) rows.push({ kind: b.kind, label, reps: b.reps, targetKg: base });
+    for (let s = 0; s < b.sets; s++) {
+      rows.push({ kind: b.kind, label, reps: b.reps, targetKg: base, note: b.kind === "failure" ? "AMRAP with block #2 weight" : "" });
+    }
   });
   return rows;
 }
@@ -94,24 +122,38 @@ function buildWorkoutPrescription(workoutId, workingRmKg, rounding = KG_STEP_DEF
  ***************************/
 function applyFailureAdjustment(currentRmKg, testWeightKg, achievedReps) {
   if (!Number.isFinite(achievedReps)) return currentRmKg;
-  if (achievedReps >= 8) return roundToStep(currentRmKg + 2.5, 0.5); // ≈ +5 lb
-  if (achievedReps <= 3) return roundToStep(Math.max(0, currentRmKg - 2.5), 0.5); // ≈ -5 lb
+  if (achievedReps >= 8) return roundToStep(currentRmKg + 2.5, 0.5);
+  if (achievedReps <= 3) return roundToStep(Math.max(0, currentRmKg - 2.5), 0.5);
   return currentRmKg;
+}
+function epley1RM(weightKg, reps) {
+  if (!Number.isFinite(weightKg) || !Number.isFinite(reps) || reps < 1) return weightKg;
+  return weightKg * (1 + reps / 30);
 }
 
 /*********************
- * UI helpers (buttons)
+ * Small SVG icon
  *********************/
-const BTN_BASE = "h-9 px-3 rounded-xl border inline-flex items-center justify-center gap-2 text-sm font-medium transition-colors";
-const BTN_SOLID = "bg-slate-900 text-white border-slate-900 hover:opacity-90";
-const BTN_SUBTLE = "bg-white text-slate-900 border-slate-200 hover:bg-slate-100";
-const BTN_GOOD = "bg-emerald-100 text-emerald-900 border-emerald-300 hover:bg-emerald-200";
-const BTN_BAD = "bg-rose-100 text-rose-900 border-rose-300 hover:bg-rose-200";
-
-/*********************
- * Emoji icon
- *********************/
-function LiftEmoji({ className = "text-6xl md:text-7xl" }) { return <span className={className} role="img" aria-label="weightlifter">🏋️‍♂️</span>; }
+function BenchIcon({ className = "w-7 h-7" }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className} aria-hidden="true">
+      {/* simple bench press doodle */}
+      <rect x="10" y="40" width="44" height="6" rx="2" fill="currentColor" opacity="0.3" />
+      <rect x="18" y="30" width="28" height="4" rx="2" fill="currentColor" opacity="0.4" />
+      {/* bar */}
+      <rect x="6" y="20" width="52" height="4" rx="2" fill="currentColor" />
+      <circle cx="8" cy="22" r="4" fill="currentColor" opacity="0.6" />
+      <circle cx="56" cy="22" r="4" fill="currentColor" opacity="0.6" />
+      {/* lifter head */}
+      <circle cx="32" cy="34" r="4" fill="currentColor" />
+      {/* arms to bar */}
+      <rect x="22" y="24" width="4" height="12" rx="2" fill="currentColor" />
+      <rect x="38" y="24" width="4" height="12" rx="2" fill="currentColor" />
+      {/* body */}
+      <rect x="28" y="36" width="8" height="6" rx="2" fill="currentColor" />
+    </svg>
+  );
+}
 
 /*********************
  * Data models
@@ -140,111 +182,136 @@ export default function App() {
 
   const selected = useMemo(() => users.find(u => u.id === selectedId) || null, [users, selectedId]);
 
-  // UI state
+  // Header menu state
   const [showAccountPanel, setShowAccountPanel] = useState(false);
-  const [toast, setToast] = useState(null);
-  const importRef = useRef(null);
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 3000); return () => clearTimeout(t); }, [toast]);
 
   // Profile actions
   function createAccount() {
     const label = window.prompt("Profilnamn (t.ex. Johan, Ebba)") || "Profil";
     const pin = window.prompt("Valfri PIN (lämna tomt för ingen PIN)") || "";
     const acc = { id: uid(), label, pin: pin.trim() ? pin.trim() : null, createdAt: new Date().toISOString() };
-    const next = [...accounts, acc]; setAccounts(next); setAccountId(acc.id);
+    const next = [...accounts, acc];
+    setAccounts(next);
+    setAccountId(acc.id);
   }
   function deleteAccount(id) {
     if (!window.confirm("Ta bort profilen? Alla dess lokala data raderas.")) return;
-    const next = accounts.filter(a => a.id !== id); setAccounts(next); if (accountId === id) setAccountId(next[0]?.id || null);
+    const next = accounts.filter(a => a.id !== id);
+    setAccounts(next);
+    if (accountId === id) setAccountId(next[0]?.id || null);
   }
   function switchAccount(a) {
-    if (a.pin) { const entered = window.prompt("Ange PIN") || ""; if (entered !== a.pin) { alert("Fel PIN"); return; } }
-    setAccountId(a.id); setShowAccountPanel(false);
+    if (a.pin) {
+      const entered = window.prompt("Ange PIN") || "";
+      if (entered !== a.pin) { alert("Fel PIN"); return; }
+    }
+    setAccountId(a.id);
+    setShowAccountPanel(false);
   }
   function signOut() { setAccountId(null); setShowAccountPanel(false); }
 
   // Users actions
-  function addUser() { if (!accountId) return; const u = NEW_USER(); u.name = `Athlete ${users.length + 1}`; const next = [...users, u]; setUsers(next); setSelectedId(u.id); }
-  function updateSelected(patch) { setUsers(prev => prev.map(u => (u.id === selectedId ? { ...u, ...patch } : u))); }
-  function removeUser(id) { const next = users.filter(u => u.id !== id); setUsers(next); if (selectedId === id) setSelectedId(next[0]?.id || null); }
-  function resetLogs() { if (!selected) return; if (!window.confirm("Rensa alla loggar för denna användare?")) return; updateSelected({ logs: {} }); }
+  function addUser() {
+    if (!accountId) return;
+    const u = NEW_USER();
+    u.name = `Athlete ${users.length + 1}`;
+    const next = [...users, u];
+    setUsers(next);
+    setSelectedId(u.id);
+  }
+  function updateSelected(patch) {
+    setUsers(prev => prev.map(u => (u.id === selectedId ? { ...u, ...patch } : u)));
+  }
+  function removeUser(id) {
+    const next = users.filter(u => u.id !== id);
+    setUsers(next);
+    if (selectedId === id) setSelectedId(next[0]?.id || null);
+  }
+  function resetLogs() {
+    if (!selected) return;
+    if (!window.confirm("Rensa alla loggar för denna användare?")) return;
+    updateSelected({ logs: {} });
+  }
 
   // Prescriptions per workout for current working RM
   const prescriptions = useMemo(() => {
     if (!selected) return {};
-    const out = {}; for (const w of WORKOUTS) out[w.id] = buildWorkoutPrescription(w.id, selected.workingRmKg, selected.rounding); return out;
+    const out = {};
+    for (const w of WORKOUTS) out[w.id] = buildWorkoutPrescription(w.id, selected.workingRmKg, selected.rounding);
+    return out;
   }, [selected]);
 
-  // Projected end-of-cycle 1RM (MM2K: base goal ≈ 115% of start + realized FT delta ± remaining)
+  // Projected end-of-cycle 1RM range
   const projected = useMemo(() => {
     if (!selected) return null;
-    const FT_IDS = [5,7,9,11,13];
-    const baseGoalKg = roundToStep(selected.oneRmKg * 1.15, 0.5); // ≈115% av start
-    let realizedDeltaKg = 0; let completed = 0;
-    for (const id of FT_IDS) {
-      const log = selected.logs?.[id];
-      if (log?.done) { completed++; const r = Number(log.failureReps); if (Number.isFinite(r)) realizedDeltaKg += (r >= 8 ? +2.5 : (r <= 3 ? -2.5 : 0)); }
-    }
-    const remaining = FT_IDS.length - completed;
-    const point = roundToStep(baseGoalKg + realizedDeltaKg, 0.5);
-    const min = roundToStep(point - 2.5 * remaining, 0.5);
-    const max = roundToStep(point + 2.5 * remaining, 0.5);
-    return { min, max, point, delta: realizedDeltaKg, remaining };
+    const remaining = [5,7,9,11,13].filter(id => !(selected.logs?.[id]?.done)).length;
+    const base = selected.workingRmKg;
+    const min = roundToStep(base - 2.5 * remaining, 0.5);
+    const max = roundToStep(base + 2.5 * remaining, 0.5);
+    return { min, max, remaining };
   }, [selected]);
-
-  // Helpers: default logging
-  function ensureDefaultSetsForRows(log, rows, failureRepsVal) {
-    return rows.map((r, idx) => {
-      const existing = log?.sets?.[idx] || {};
-      const actualKg = Number.isFinite(existing.actualKg) ? existing.actualKg : r.targetKg;
-      let reps;
-      if (Number.isFinite(existing.reps)) reps = existing.reps;
-      else if (typeof r.reps === "number") reps = r.reps;
-      else if (r.kind === "failure") reps = Number.isFinite(failureRepsVal) ? Number(failureRepsVal) : 0;
-      else reps = 0;
-      return { actualKg, reps };
-    });
-  }
 
   // Logging and locking
   function writeLog(workoutId, newEntry) {
-    if (!selected) return; const prev = selected.logs?.[workoutId] || { sets: [], done: false }; updateSelected({ logs: { ...selected.logs, [workoutId]: { ...prev, ...newEntry } } });
+    if (!selected) return;
+    const prev = selected.logs?.[workoutId] || { sets: [], done: false };
+    updateSelected({ logs: { ...selected.logs, [workoutId]: { ...prev, ...newEntry } } });
   }
 
-  function markDone(workoutId, done = true, options = {}) {
-    if (!selected) return; const prev = selected.logs?.[workoutId] || { sets: [], done: false };
+  function markDone(workoutId, done = true) {
+    if (!selected) return;
+    const prev = selected.logs?.[workoutId] || { sets: [], done: false };
+
     if (done && !prev.done) {
-      const rowsNow = options.forceRows || buildWorkoutPrescription(workoutId, selected.workingRmKg, selected.rounding);
-      const setsWithDefaults = ensureDefaultSetsForRows(prev, rowsNow, prev.failureReps);
-      writeLog(workoutId, { ...prev, sets: setsWithDefaults, done: true, doneAt: new Date().toISOString(), lockedRmKg: selected.workingRmKg, lockedRounding: selected.rounding, lockedRows: rowsNow });
+      const rowsNow = buildWorkoutPrescription(workoutId, selected.workingRmKg, selected.rounding);
+      writeLog(workoutId, {
+        ...prev,
+        done: true,
+        doneAt: new Date().toISOString(),
+        lockedRmKg: selected.workingRmKg,
+        lockedRounding: selected.rounding,
+        lockedRows: rowsNow,
+      });
     } else if (!done && prev.done) {
-      const { lockedRmKg, lockedRounding, lockedRows, doneAt, ...rest } = prev; writeLog(workoutId, { ...rest, done: false });
-    } else { writeLog(workoutId, { ...prev, done }); }
+      const { lockedRmKg, lockedRounding, lockedRows, doneAt, ...rest } = prev;
+      writeLog(workoutId, { ...rest, done: false });
+    } else {
+      writeLog(workoutId, { ...prev, done });
+    }
   }
 
-  // Confirm failure change: auto-complete workout and adjust RM, + toast for success
-  function confirmFailure(workoutId) {
-    if (!selected) return; const log = selected.logs?.[workoutId] || {};
-    const rowsNow = (log?.done && Array.isArray(log.lockedRows) && log.lockedRows.length) ? log.lockedRows : (prescriptions[workoutId] || []);
-    const p2Weight = rowsNow[1]?.targetKg || 0; const reps = Number(log.failureReps);
-    const newRm = applyFailureAdjustment(selected.workingRmKg, p2Weight, reps);
-    const setsWithDefaults = ensureDefaultSetsForRows(log, rowsNow, reps);
-    writeLog(workoutId, { ...log, sets: setsWithDefaults, failureReps: reps });
-    // Lock snapshot based on pre-adjustment rows
-    markDone(workoutId, true, { forceRows: rowsNow });
-    if (Number.isFinite(reps) && reps >= 8) setToast({ type: "up", msg: "Grattis! Du klarade Failure Test – +2.5 kg arbets‑1RM 🎉" });
-    // Apply RM change after locking
+  function applyFailure(workoutId, reps) {
+    if (!selected) return;
+    const log = selected.logs?.[workoutId];
+    const rows = log?.done && Array.isArray(log.lockedRows) && log.lockedRows.length
+      ? log.lockedRows
+      : (prescriptions[workoutId] || []);
+    const p2Weight = rows[1]?.targetKg || 0;
+    const newRm = applyFailureAdjustment(selected.workingRmKg, p2Weight, Number(reps));
     updateSelected({ workingRmKg: newRm });
+    writeLog(workoutId, { failureReps: Number(reps) });
   }
 
   // Export/Import of current profile users
   function exportProfile() {
-    if (!accountId) return; const payload = { account: accounts.find(a => a.id === accountId) || null, users };
+    if (!accountId) return;
+    const payload = { account: accounts.find(a => a.id === accountId) || null, users };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `mm2k_profile_${accountId}.json`; a.click(); URL.revokeObjectURL(url);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `mm2k_profile_${accountId}.json`; a.click();
+    URL.revokeObjectURL(url);
   }
   function importProfile(file) {
-    const reader = new FileReader(); reader.onload = () => { try { const data = JSON.parse(String(reader.result)); if (data && Array.isArray(data.users)) setUsers(data.users); else alert("Ogiltigt JSON-format"); } catch (e) { alert("Kunde inte läsa JSON: " + e.message); } }; reader.readAsText(file);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        if (data && Array.isArray(data.users)) setUsers(data.users);
+        else alert("Ogiltigt JSON-format");
+      } catch (e) { alert("Kunde inte läsa JSON: " + e.message); }
+    };
+    reader.readAsText(file);
   }
 
   // Login screen if no active account
@@ -253,11 +320,11 @@ export default function App() {
       <div className="min-h-screen w-full bg-slate-50 text-slate-900 grid place-items-center p-6">
         <div className="w-full max-w-xl bg-white rounded-2xl shadow-lg border p-6">
           <div className="text-center mb-4">
-            <div className="text-3xl md:text-4xl font-extrabold flex items-center justify-center gap-3"><LiftEmoji /><span>MM2K Bench</span></div>
-            <div className="text-slate-700">6 veckor · 14 pass · Lokala profiler</div>
+            <div className="text-3xl font-extrabold flex items-center justify-center gap-2"><BenchIcon /><span>MM2K Bench</span></div>
+            <div className="text-slate-500">6 veckor - 14 pass - Lokala profiler</div>
           </div>
           <div className="space-y-3">
-            <button className={`${BTN_BASE} ${BTN_SOLID} w-full` } onClick={createAccount}>+ Ny profil</button>
+            <button className="w-full px-3 py-2 rounded-xl bg-slate-900 text-white" onClick={createAccount}>+ Ny profil</button>
             {accounts.length > 0 && (
               <div>
                 <div className="text-sm font-medium mb-2">Befintliga profiler</div>
@@ -266,11 +333,11 @@ export default function App() {
                     <li key={a.id} className="flex items-center justify-between rounded-xl border p-2">
                       <div>
                         <div className="font-medium">{a.label}</div>
-                        <div className="text-xs text-slate-500">{a.pin ? "PIN‑skyddad" : "Ingen PIN"}</div>
+                        <div className="text-xs text-slate-500">{a.pin ? "PIN-skyddad" : "Ingen PIN"}</div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={() => switchAccount(a)}>Välj</button>
-                        <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={() => deleteAccount(a.id)}>Ta bort</button>
+                        <button className="px-3 py-1.5 rounded-xl border" onClick={() => switchAccount(a)}>Välj</button>
+                        <button className="px-3 py-1.5 rounded-xl border" onClick={() => deleteAccount(a.id)}>Ta bort</button>
                       </div>
                     </li>
                   ))}
@@ -288,40 +355,44 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-900">
-      {/* Dark gradient for contrast */}
+      {/* Modern header */}
       <header className="sticky top-0 z-10 border-b border-slate-200">
-        <div className="bg-gradient-to-r from-violet-900 via-indigo-900 to-sky-900 text-white">
+        <div className="bg-gradient-to-r from-violet-600 via-indigo-600 to-sky-500 text-white">
           <div className="mx-auto max-w-6xl px-4 py-6 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <LiftEmoji />
+            <div className="flex items-center gap-2">
+              <BenchIcon className="w-7 h-7" />
               <div>
-                <h1 className="text-2xl md:text-3xl font-black tracking-tight drop-shadow-[0_1px_1px_rgba(0,0,0,.5)]">MM2K Bench</h1>
-                <p className="text-sm md:text-base text-white/95 drop-shadow-[0_1px_1px_rgba(0,0,0,.6)]">6 veckor · 14 pass · Kg‑beräkningar · Failure‑bekräftelse</p>
+                <h1 className="text-2xl md:text-3xl font-black tracking-tight">MM2K Bench</h1>
+                <p className="text-sm md:text-base text-white/85">6 veckor - 14 pass - Rek. vikter i kg - Failure med bekräftelse</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button onClick={exportProfile} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Exportera</button>
-              <button onClick={()=>importRef.current?.click()} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Importera</button>
-              <input ref={importRef} type="file" accept="application/json" className="hidden" onChange={e => e.target.files && importProfile(e.target.files[0])} />
+              <button onClick={exportProfile} className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-sm font-medium">Exportera</button>
+              <label className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-sm font-medium cursor-pointer">
+                Importera
+                <input type="file" accept="application/json" className="hidden" onChange={e => e.target.files && importProfile(e.target.files[0])} />
+              </label>
               <div className="relative">
-                <button onClick={() => setShowAccountPanel(v => !v)} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Profil: {activeAccount?.label || "Okänd"}</button>
+                <button onClick={() => setShowAccountPanel(v => !v)} className="rounded-2xl bg-white/15 hover:bg-white/25 px-3 py-2 text-sm font-medium backdrop-blur">
+                  Profil: {activeAccount?.label || "Okänd"}
+                </button>
                 {showAccountPanel && (
-                  <div className="absolute right-0 mt-2 w-72 bg-white text-slate-900 rounded-xl shadow-lg border p-2">
+                  <div className="absolute right-0 mt-2 w-64 bg-white text-slate-900 rounded-xl shadow-lg border p-2">
                     <div className="px-2 py-1 text-xs text-slate-500">Profiler</div>
                     <ul className="max-h-60 overflow-auto">
                       {accounts.map(a => (
                         <li key={a.id} className="flex items-center justify-between rounded-lg hover:bg-slate-50 px-2 py-1">
                           <button className="text-left" onClick={() => switchAccount(a)}>
                             <div className="font-medium">{a.label}</div>
-                            <div className="text-xs text-slate-500">{a.pin ? "PIN‑skyddad" : "Ingen PIN"}</div>
+                            <div className="text-xs text-slate-500">{a.pin ? "PIN-skyddad" : "Ingen PIN"}</div>
                           </button>
                           <button className="text-slate-500 hover:text-rose-600" onClick={() => deleteAccount(a.id)} title="Ta bort">✕</button>
                         </li>
                       ))}
                     </ul>
                     <div className="flex items-center gap-2 p-2">
-                      <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={createAccount}>+ Ny profil</button>
-                      <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={signOut}>Logga ut</button>
+                      <button className="px-3 py-1.5 rounded-xl border" onClick={createAccount}>+ Ny profil</button>
+                      <button className="px-3 py-1.5 rounded-xl border" onClick={signOut}>Logga ut</button>
                     </div>
                   </div>
                 )}
@@ -337,17 +408,20 @@ export default function App() {
           <h2 className="text-lg font-semibold mb-2">Användare i profilen</h2>
           <ul className="space-y-1">
             {users.map(u => (
-              <li key={u.id} className={`flex items-center justify-between rounded-xl px-2 py-1 ${selectedId === u.id ? "bg-slate-100" : ""}`}>
+              <li
+                key={u.id}
+                className={`flex items-center justify-between rounded-xl px-2 py-1 ${selectedId === u.id ? "bg-slate-100" : ""}`}
+              >
                 <button onClick={() => setSelectedId(u.id)} className="text-left grow">
                   <div className="font-medium">{u.name || "Namnlös"}</div>
-                  <div className="text-xs text-slate-500">1RM: {u.oneRmKg} kg · Arbets-1RM: {u.workingRmKg} kg</div>
+                  <div className="text-xs text-slate-500">1RM: {u.oneRmKg} kg - Arbets-1RM: {u.workingRmKg} kg</div>
                 </button>
                 <button onClick={() => removeUser(u.id)} className="text-slate-500 hover:text-rose-600" title="Ta bort">✕</button>
               </li>
             ))}
           </ul>
           <div className="mt-3">
-            <button onClick={addUser} className={`${BTN_BASE} ${BTN_SOLID} w-full`}>+ Ny användare</button>
+            <button onClick={addUser} className="w-full px-3 py-1.5 rounded-xl bg-slate-900 text-white hover:opacity-90">+ Ny användare</button>
           </div>
         </aside>
 
@@ -373,13 +447,14 @@ export default function App() {
                   </label>
                   <label className="flex flex-col gap-1">
                     <span className="text-sm text-slate-600">1RM (kg)</span>
-                    <input type="number" className="rounded-xl border px-3 py-2" value={selected.oneRmKg} onChange={e=>{ const v = Number(e.target.value || 0); updateSelected({ oneRmKg: v, workingRmKg: v }); }} />
+                    <input type="number" className="rounded-xl border px-3 py-2" value={selected.oneRmKg}
+                      onChange={e=>{ const v = Number(e.target.value || 0); updateSelected({ oneRmKg: v, workingRmKg: v }); }} />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-sm text-slate-600">Arbets-1RM (kg) · beräkning</span>
+                    <span className="text-sm text-slate-600">Arbets-1RM (kg) - beräkning</span>
                     <div className="flex gap-2">
                       <input type="number" className="rounded-xl border px-3 py-2 grow" value={selected.workingRmKg} onChange={e=>updateSelected({ workingRmKg: Number(e.target.value || 0) })} />
-                      <button className={`${BTN_BASE} ${BTN_SUBTLE}`} title="Återställ till 1RM" onClick={()=>updateSelected({ workingRmKg: selected.oneRmKg })}>Reset</button>
+                      <button className="px-3 py-2 rounded-xl border" title="Återställ till 1RM" onClick={()=>updateSelected({ workingRmKg: selected.oneRmKg })}>Reset</button>
                     </div>
                   </label>
                   <label className="flex flex-col gap-1">
@@ -393,9 +468,7 @@ export default function App() {
                       {projected ? (
                         <>
                           <div className="font-medium">Prognos 1RM efter #14:</div>
-                          <div>Bas (≈115% av start): <span className="font-medium">{roundToStep(selected.oneRmKg * 1.15, 0.5)} kg</span></div>
-                          <div>Uppnått via Failure‑test hittills: <span className="font-medium">{projected.delta >= 0 ? "+" : ""}{projected.delta} kg</span></div>
-                          <div className="mt-1">Prognosintervall: <span className="font-semibold">{projected.min} – {projected.max} kg</span> (återstår {projected.remaining} FT · ±2.5 kg/test)</div>
+                          <div>{projected.min} – {projected.max} kg (återstår {projected.remaining} failure-test, potentiellt ±2.5 kg per test)</div>
                         </>
                       ) : (
                         <div>Ingen prognos tillgänglig.</div>
@@ -408,7 +481,7 @@ export default function App() {
                   </label>
                 </div>
                 <div className="mt-4 flex items-center gap-3">
-                  <button onClick={resetLogs} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Rensa loggar</button>
+                  <button onClick={resetLogs} className="px-3 py-2 rounded-xl border">Rensa loggar</button>
                 </div>
               </div>
 
@@ -416,11 +489,16 @@ export default function App() {
               <div className="grid md:grid-cols-2 gap-6">
                 {WORKOUTS.map(w => {
                   const log = selected.logs?.[w.id] || { sets: [], done: false, failureReps: undefined };
-                  const rows = (log.done && Array.isArray(log.lockedRows) && log.lockedRows.length) ? log.lockedRows : (prescriptions[w.id] || []);
+                  const rows = (log.done && Array.isArray(log.lockedRows) && log.lockedRows.length)
+                    ? log.lockedRows
+                    : (prescriptions[w.id] || []);
 
                   // Failure suggestion state
                   const reps = log.failureReps;
-                  const suggestion = (typeof reps === "number" && !Number.isNaN(reps)) ? (reps >= 8 ? "increase" : (reps <= 3 ? "decrease" : "hold")) : null;
+                  const suggestion = (typeof reps === "number" && !Number.isNaN(reps))
+                    ? (reps >= 8 ? "increase" : (reps <= 3 ? "decrease" : "hold"))
+                    : null;
+
                   const proposedUp = roundToStep(selected.workingRmKg + 2.5, 0.5);
                   const proposedDown = roundToStep(Math.max(0, selected.workingRmKg - 2.5), 0.5);
 
@@ -429,10 +507,10 @@ export default function App() {
                       <header className="flex items-start justify-between mb-2">
                         <div>
                           <h3 className="font-semibold">{w.name}</h3>
-                          <p className="text-xs text-slate-500">Beräknat från arbets-1RM {selected.workingRmKg} kg{log.done && log.doneAt ? ` (låst ${new Date(log.doneAt).toLocaleDateString()})` : ""}</p>
+                          <p className="text-xs text-slate-500">Beräknat från arbets-1RM {selected.workingRmKg} kg {log.done && log.doneAt ? `(låst ${new Date(log.doneAt).toLocaleDateString()})` : ""}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          <button onClick={()=>markDone(w.id, !log.done)} className={`${BTN_BASE} ${log.done ? BTN_GOOD : BTN_SUBTLE}`}>{log.done?"Klart":"Markera klart"}</button>
+                          <button onClick={()=>markDone(w.id, !log.done)} className={`px-2.5 py-1.5 rounded-xl border text-sm ${log.done ? "bg-green-600 text-white border-green-600" : ""}`}>{log.done?"Klart":"Markera klart"}</button>
                         </div>
                       </header>
 
@@ -467,7 +545,7 @@ export default function App() {
                       {rows.some(r=>r.kind === "failure") && (
                         <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 p-3">
                           <div className="text-sm mb-2 font-medium">Failure Test</div>
-                          <p className="text-sm text-slate-600 mb-2">Kör så många reps som möjligt med block #2‑vikten ({rows[1]?.targetKg} kg). 4–7 reps: ingen ändring. ≤3: −2.5 kg. ≥8: +2.5 kg.</p>
+                          <p className="text-sm text-slate-600 mb-2">Kör så många reps som möjligt med block #2-vikten ({rows[1]?.targetKg} kg). 4–7 reps: ingen ändring. ≤3: sänk 2.5 kg. ≥8: höj 2.5 kg.</p>
                           <div className="flex items-center gap-2 mb-2">
                             <input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ""} onChange={e=>writeLog(w.id, { ...log, failureReps: Number(e.target.value||0) })} />
                           </div>
@@ -476,8 +554,8 @@ export default function App() {
                               <span>Föreslagen ändring:</span>
                               <span className="font-medium">+2.5 kg</span>
                               <span>({selected.workingRmKg} → {proposedUp} kg)</span>
-                              <button className={`${BTN_BASE} ${BTN_GOOD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button>
-                              <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button>
+                              <button className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white" onClick={()=>applyFailure(w.id, log.failureReps)}>Bekräfta</button>
+                              <button className="px-3 py-1.5 rounded-xl border" onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button>
                             </div>
                           )}
                           {suggestion === "decrease" && (
@@ -485,19 +563,21 @@ export default function App() {
                               <span>Föreslagen ändring:</span>
                               <span className="font-medium">-2.5 kg</span>
                               <span>({selected.workingRmKg} → {proposedDown} kg)</span>
-                              <button className={`${BTN_BASE} ${BTN_BAD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button>
-                              <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button>
+                              <button className="px-3 py-1.5 rounded-xl bg-rose-600 text-white" onClick={()=>applyFailure(w.id, log.failureReps)}>Bekräfta</button>
+                              <button className="px-3 py-1.5 rounded-xl border" onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button>
                             </div>
                           )}
-                          {suggestion === "hold" && (<div className="text-xs text-slate-600">Ingen ändring föreslås för {reps} reps.</div>)}
+                          {suggestion === "hold" && (
+                            <div className="text-xs text-slate-600">Ingen ändring föreslås för {reps} reps.</div>
+                          )}
                         </div>
                       )}
 
                       {rows.some(r=>r.kind === "negative") && (
-                        <div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1×1 (~{Math.round(getPercentsForWorkout(w.id)[2]*100)}% av 1RM). Spotta säkert.</div>
+                        <div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1x1 (~{Math.round(getPercentsForWorkout(w.id)[2]*100)}% av 1RM). Spotta säkert.</div>
                       )}
                       {rows.some(r=>r.kind === "max") && (
-                        <div className="mt-3 text-xs text-slate-600">Max‑test: försök nytt 1RM. Värm upp smart, ha spotter.</div>
+                        <div className="mt-3 text-xs text-slate-600">Max-test: försök nytt 1RM. Värm upp smart, ha spotter.</div>
                       )}
                     </article>
                   );
@@ -508,9 +588,9 @@ export default function App() {
                 <h3 className="font-semibold mb-2">Tips och upplägg (kort)</h3>
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Två bänkpass per vecka enligt schemat ovan (14 totalt).</li>
-                  <li>FT‑dagar styr arbetande 1RM (±2.5 kg). Negativ‑dagar är >110% av 1RM.</li>
-                  <li>Vikter beräknas från ditt arbets‑1RM i kg och avrundas till närmaste {selected.rounding} kg.</li>
-                  <li>Sista passet (#14) siktar runt 115% av start‑1RM, därefter bygger FT‑utfall vidare.</li>
+                  <li>Udda pass har 6:or/5:or + Failure Test; jämna pass är tyngre (3:or/1:or) och vissa har negativa set.</li>
+                  <li>Vikter beräknas från ditt arbets-1RM i kg och avrundas till närmaste {selected.rounding} kg.</li>
+                  <li>Efter programmet: lägg in 2–3 lugnare veckor under 80% av 1RM innan nästa cykel.</li>
                 </ul>
               </div>
             </>
@@ -518,21 +598,8 @@ export default function App() {
         </section>
       </main>
 
-      {/* Toast */}
-      {toast && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <div className="rounded-xl border bg-white text-slate-900 px-4 py-3 shadow-lg min-w-[260px] flex items-start gap-2">
-            <span className="text-xl">🎉</span>
-            <div className="text-sm leading-snug">
-              <div className="font-semibold">{toast.type === "up" ? "Grattis!" : "Notis"}</div>
-              <div>{toast.msg}</div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <footer className="mx-auto max-w-6xl px-4 pb-10 text-xs text-slate-500">
-        <div className="mt-6">Byggt för att efterlikna MM2K‑upplägget. Procentkurvan är tunad så #14 ≈ 115% av start‑1RM. FT‑utfall lägger på ±2.5 kg per test.</div>
+        <div className="mt-6">Byggt för att efterlikna MM2K-upplägget. Struktur och set/reps följer originalet; vikter räknas i kg via procent-approximation.</div>
       </footer>
     </div>
   );

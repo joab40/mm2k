@@ -1,0 +1,490 @@
+import React, { useEffect, useMemo, useState } from "react";
+
+/**
+ * MM2K (Muscle Media 2000) – "Add up to 40 lb to your Bench in 6 Weeks"
+ * En lokal-first webapp i en enda App.jsx-fil.
+ *
+ * Nytt i denna version:
+ *  - Modernare rubrik med gradient, undertitel och profilbadge.
+ *  - "Login"/Profiler: flera profiler kan skapas och väljas (lokalt sparade).
+ *    Varje profil har eget separat sparutrymme i localStorage.
+ *  - Befintlig funktionalitet för flera användare per profil, loggning, failure‑justering m.m. kvarstår.
+ *
+ * OBS: Denna profilinloggning är lokal och ej säkerhetsklassad. För riktig auth & molnlagring,
+ * överväg t.ex. Supabase/Firebase + server, eller en backend med OAuth.
+ */
+
+/**********************
+ * Små hjälpfunktioner *
+ **********************/
+const ACCOUNTS_KEY = "mm2k_accounts_v1";            // lista över profiler
+const CURRENT_ACCOUNT_KEY = "mm2k_current_account_v1"; // aktiv profil-id
+const LEGACY_USERS_KEY = "mm2k_users_v1";           // gammal global lagring (migreras vid behov)
+const kgStepDefault = 2.5;
+
+function uid() { return Math.random().toString(36).slice(2, 10); }
+function roundToStep(value, step = kgStepDefault) { if (!Number.isFinite(value)) return 0; return Math.round(value / step) * step; }
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+
+function getUsersStorageKey(accountId) {
+  return `mm2k_users_v1_${accountId || "default"}`;
+}
+
+function loadAccounts() {
+  try {
+    const raw = localStorage.getItem(ACCOUNTS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveAccounts(accounts) {
+  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+}
+
+function migrateLegacyUsersIfAny(accountId) {
+  try {
+    const legacy = localStorage.getItem(LEGACY_USERS_KEY);
+    const key = getUsersStorageKey(accountId);
+    if (legacy && !localStorage.getItem(key)) {
+      localStorage.setItem(key, legacy);
+    }
+  } catch {}
+}
+
+function loadUsersForAccount(accountId) {
+  try {
+    if (!accountId) return [];
+    migrateLegacyUsersIfAny(accountId);
+    const raw = localStorage.getItem(getUsersStorageKey(accountId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+function saveUsersForAccount(accountId, users) {
+  if (!accountId) return;
+  localStorage.setItem(getUsersStorageKey(accountId), JSON.stringify(users));
+}
+
+/***********************************
+ * MM2K rep-scheman (14 bänkpass)  *
+ ***********************************/
+const WORKOUTS = [
+  { id: 1,  name: "Workout #1",  blocks: [ { sets: 1, reps: 8,  kind: "work" }, { sets: 1, reps: 6,  kind: "work" }, { sets: 3, reps: 5,  kind: "work" } ] },
+  { id: 2,  name: "Workout #2",  blocks: [ { sets: 2, reps: 5,  kind: "work" }, { sets: 2, reps: 3,  kind: "work" }, { sets: 1, reps: 1,  kind: "single" } ] },
+  { id: 3,  name: "Workout #3",  blocks: [ { sets: 1, reps: 8,  kind: "work" }, { sets: 1, reps: 6,  kind: "work" }, { sets: 3, reps: 5,  kind: "work" } ] },
+  { id: 4,  name: "Workout #4",  blocks: [ { sets: 2, reps: 5,  kind: "work" }, { sets: 2, reps: 3,  kind: "work" }, { sets: 1, reps: 1,  kind: "single" } ] },
+  { id: 5,  name: "Workout #5 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
+  { id: 6,  name: "Workout #6 (Negative Only)", blocks: [ { sets: 2, reps: 3,  kind: "work" }, { sets: 2, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "negative" } ] },
+  { id: 7,  name: "Workout #7 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
+  { id: 8,  name: "Workout #8 (Negative Only)", blocks: [ { sets: 2, reps: 3,  kind: "work" }, { sets: 2, reps: 1,  kind: "work" }, { sets: 1, reps: 1,  kind: "negative" } ] },
+  { id: 9,  name: "Workout #9 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
+  { id: 10, name: "Workout #10 (Negative Only)", blocks: [ { sets: 2, reps: 3,  kind: "work" }, { sets: 2, reps: 1,  kind: "work" }, { sets: 1, reps: 1,  kind: "negative" } ] },
+  { id: 11, name: "Workout #11 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
+  { id: 12, name: "Workout #12", blocks: [ { sets: 2, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "single" } ] },
+  { id: 13, name: "Workout #13 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
+  { id: 14, name: "Workout #14 (Max Test)", blocks: [ { sets: 1, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "max" } ] },
+];
+
+/*********************************************
+ * Procent-approximation av progressionstabell
+ *********************************************/
+function getPercentsForWorkout(w) {
+  switch (w) {
+    case 1:  return [0.66, 0.74, 0.793];
+    case 2:  return [0.724, 0.81, 0.897];
+    case 3:  return [0.68, 0.76, 0.81];
+    case 4:  return [0.76, 0.86, 0.94];
+    case 5:  return [0.74, 0.845, 0.845];
+    case 6:  return [0.83, 0.92, 1.08];
+    case 7:  return [0.75, 0.86, 0.86];
+    case 8:  return [0.86, 0.95, 1.10];
+    case 9:  return [0.76, 0.875, 0.875];
+    case 10: return [0.88, 0.97, 1.12];
+    case 11: return [0.77, 0.89, 0.89];
+    case 12: return [0.92, 0.98, 1.00];
+    case 13: return [0.78, 0.905, 0.905];
+    case 14: return [0.95, 1.00, 1.02];
+    default: return [0.7, 0.8, 0.9];
+  }
+}
+function kg(v) { return Number.isFinite(v) ? v : 0; }
+
+/**********************************************
+ * Generering av rekommenderade vikter per pass
+ **********************************************/
+function buildWorkoutPrescription(workoutId, oneRmKg, rounding = kgStepDefault) {
+  const [p1, p2, p3] = getPercentsForWorkout(workoutId);
+  const blocks = WORKOUTS.find(w => w.id === workoutId)?.blocks || [];
+  const weights = [ roundToStep(kg(oneRmKg) * p1, rounding), roundToStep(kg(oneRmKg) * p2, rounding), roundToStep(kg(oneRmKg) * p3, rounding) ];
+  const rows = [];
+  blocks.forEach((b, i) => {
+    const base = (b.kind === "failure" ? weights[1] : weights[i]); // Failure-test använder block #2-vikten
+    const label = b.kind === "failure" ? "Failure Test" : b.kind === "negative" ? "Negative only" : b.kind === "max" ? "Max Test" : b.kind === "single" ? "Single" : "Work";
+    for (let s = 0; s < b.sets; s++) {
+      rows.push({ kind: b.kind, label, reps: b.reps, targetKg: base, note: b.kind === "failure" ? "Repa ut till legit fail med block #2‑vikten" : "" });
+    }
+  });
+  return rows;
+}
+
+/***************************************************
+ * Failure Test – enkel auto-justering av arbets-1RM
+ ***************************************************/
+function applyFailureAdjustment(currentRmKg, testWeightKg, achievedReps) {
+  if (!Number.isFinite(achievedReps)) return currentRmKg;
+  if (achievedReps >= 8) return roundToStep(currentRmKg + 2.5, 0.5);
+  if (achievedReps <= 3) return roundToStep(Math.max(0, currentRmKg - 2.5), 0.5);
+  return currentRmKg;
+}
+function epley1RM(weightKg, reps) { if (!Number.isFinite(weightKg) || !Number.isFinite(reps) || reps < 1) return weightKg; return weightKg * (1 + reps / 30); }
+
+/*********************
+ * Datamodeller       *
+ *********************/
+const NEW_USER = () => ({ id: uid(), name: "", startDate: new Date().toISOString().slice(0, 10), oneRmKg: 100, workingRmKg: 100, rounding: kgStepDefault, notes: "", logs: {} });
+
+/****************
+ * Huvudkomponent
+ ****************/
+export default function App() {
+  // Profiler (lokal "login")
+  const [accounts, setAccounts] = useState(loadAccounts());
+  const [accountId, setAccountId] = useState(() => localStorage.getItem(CURRENT_ACCOUNT_KEY) || (loadAccounts()[0]?.id || null));
+
+  useEffect(() => { saveAccounts(accounts); }, [accounts]);
+  useEffect(() => { if (accountId) localStorage.setItem(CURRENT_ACCOUNT_KEY, String(accountId)); }, [accountId]);
+
+  // Data per profil
+  const [users, setUsers] = useState(() => loadUsersForAccount(accountId));
+  useEffect(() => { setUsers(loadUsersForAccount(accountId)); }, [accountId]);
+  useEffect(() => { if (accountId) saveUsersForAccount(accountId, users); }, [users, accountId]);
+
+  // UI-val i profilen
+  const [selectedId, setSelectedId] = useState(() => users[0]?.id || null);
+  useEffect(() => { setSelectedId(users[0]?.id || null); }, [users]);
+
+  const selected = useMemo(() => users.find(u => u.id === selectedId) || null, [users, selectedId]);
+
+  // Hedern/meny
+  const [showAccountPanel, setShowAccountPanel] = useState(false);
+
+  function createAccount() {
+    const label = window.prompt("Profilnamn (t.ex. Johan, Ebba)") || "Profil";
+    const pin = window.prompt("Valfri PIN-kod (lämna tomt för ingen PIN)") || "";
+    const acc = { id: uid(), label, pin: pin.trim() ? pin.trim() : null, createdAt: new Date().toISOString() };
+    const next = [...accounts, acc];
+    setAccounts(next);
+    setAccountId(acc.id);
+  }
+  function deleteAccount(id) {
+    if (!window.confirm("Ta bort profilen? Alla dess lokala data raderas.")) return;
+    const next = accounts.filter(a => a.id !== id);
+    setAccounts(next);
+    if (accountId === id) setAccountId(next[0]?.id || null);
+  }
+  function switchAccount(a) {
+    if (a.pin) {
+      const entered = window.prompt("Ange PIN för profilen") || "";
+      if (entered !== a.pin) { alert("Fel PIN"); return; }
+    }
+    setAccountId(a.id);
+    setShowAccountPanel(false);
+  }
+  function signOut() {
+    setAccountId(null);
+    setShowAccountPanel(false);
+  }
+
+  // CRUD för users inom aktiv profil
+  function addUser() {
+    if (!accountId) return;
+    const u = NEW_USER();
+    u.name = `Athlete ${users.length + 1}`;
+    const next = [...users, u];
+    setUsers(next);
+    setSelectedId(u.id);
+  }
+  function updateSelected(patch) { setUsers(prev => prev.map(u => (u.id === selectedId ? { ...u, ...patch } : u))); }
+  function removeUser(id) {
+    const next = users.filter(u => u.id !== id);
+    setUsers(next);
+    if (selectedId === id) setSelectedId(next[0]?.id || null);
+  }
+  function resetLogs() {
+    if (!selected) return;
+    if (!window.confirm("Rensa alla loggar för denna användare?")) return;
+    updateSelected({ logs: {} });
+  }
+
+  // Prescriptions per workout for current working RM
+  const prescriptions = useMemo(() => {
+    if (!selected) return {};
+    const out = {};
+    for (const w of WORKOUTS) out[w.id] = buildWorkoutPrescription(w.id, selected.workingRmKg, selected.rounding);
+    return out;
+  }, [selected]);
+
+  function writeLog(workoutId, newEntry) {
+    if (!selected) return;
+    const prev = selected.logs?.[workoutId] || { sets: [], done: false };
+    updateSelected({ logs: { ...selected.logs, [workoutId]: { ...prev, ...newEntry } } });
+  }
+  function markDone(workoutId, done = true) { writeLog(workoutId, { done }); }
+  function applyFailure(workoutId, reps) {
+    if (!selected) return;
+    const rows = prescriptions[workoutId] || [];
+    const p2Weight = rows[1]?.targetKg || 0; // block #2 vikt
+    const newRm = applyFailureAdjustment(selected.workingRmKg, p2Weight, Number(reps));
+    updateSelected({ workingRmKg: newRm });
+    writeLog(workoutId, { failureReps: Number(reps) });
+  }
+  function setEpleyFromFailure(workoutId, reps) {
+    if (!selected) return;
+    const rows = prescriptions[workoutId] || [];
+    const p2Weight = rows[1]?.targetKg || 0;
+    const est = epley1RM(p2Weight, Number(reps));
+    updateSelected({ workingRmKg: roundToStep(est, 0.5) });
+    writeLog(workoutId, { failureReps: Number(reps) });
+  }
+
+  // Login/Sign‑in skärm
+  if (!accountId) {
+    return (
+      <div className="min-h-screen w-full bg-slate-50 text-slate-900 grid place-items-center p-6">
+        <div className="w-full max-w-xl bg-white rounded-2xl shadow-lg border p-6">
+          <div className="text-center mb-4">
+            <div className="text-3xl font-extrabold">🏋️ MM2K Bench</div>
+            <div className="text-slate-500">6 veckor • 14 pass • Lokala profiler</div>
+          </div>
+          <div className="space-y-3">
+            <button className="w-full px-3 py-2 rounded-xl bg-slate-900 text-white" onClick={createAccount}>+ Ny profil</button>
+            {accounts.length > 0 && (
+              <div>
+                <div className="text-sm font-medium mb-2">Befintliga profiler</div>
+                <ul className="space-y-2">
+                  {accounts.map(a => (
+                    <li key={a.id} className="flex items-center justify-between rounded-xl border p-2">
+                      <div>
+                        <div className="font-medium">{a.label}</div>
+                        <div className="text-xs text-slate-500">{a.pin ? "PIN‑skyddad" : "Ingen PIN"}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button className="px-3 py-1.5 rounded-xl border" onClick={() => switchAccount(a)}>Välj</button>
+                        <button className="px-3 py-1.5 rounded-xl border" onClick={() => deleteAccount(a.id)}>Ta bort</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="text-xs text-slate-500">Profiler sparas endast lokalt i din webbläsare.</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const activeAccount = accounts.find(a => a.id === accountId);
+
+  return (
+    <div className="min-h-screen w-full bg-slate-50 text-slate-900">
+      {/* Modern header */}
+      <header className="sticky top-0 z-10 border-b border-slate-200">
+        <div className="bg-gradient-to-r from-violet-600 via-indigo-600 to-sky-500 text-white">
+          <div className="mx-auto max-w-6xl px-4 py-6 flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-black tracking-tight flex items-center gap-2">
+                <span>🏋️</span> MM2K Bench
+              </h1>
+              <p className="text-sm md:text-base/relaxed text-white/80">6 veckor • 14 pass • Rek. vikter i kg • Failure‑autojustering</p>
+            </div>
+            <div className="relative">
+              <button onClick={() => setShowAccountPanel(v => !v)} className="rounded-2xl bg-white/15 hover:bg-white/25 px-3 py-2 text-sm font-medium backdrop-blur">
+                Profil: {activeAccount?.label || "Okänd"}
+              </button>
+              {showAccountPanel && (
+                <div className="absolute right-0 mt-2 w-64 bg-white text-slate-900 rounded-xl shadow-lg border p-2">
+                  <div className="px-2 py-1 text-xs text-slate-500">Profiler</div>
+                  <ul className="max-h-60 overflow-auto">
+                    {accounts.map(a => (
+                      <li key={a.id} className="flex items-center justify-between rounded-lg hover:bg-slate-50 px-2 py-1">
+                        <button className="text-left" onClick={() => switchAccount(a)}>
+                          <div className="font-medium">{a.label}</div>
+                          <div className="text-xs text-slate-500">{a.pin ? "PIN‑skyddad" : "Ingen PIN"}</div>
+                        </button>
+                        <button className="text-slate-500 hover:text-rose-600" onClick={() => deleteAccount(a.id)} title="Ta bort">✕</button>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex items-center gap-2 p-2">
+                    <button className="px-3 py-1.5 rounded-xl border" onClick={createAccount}>+ Ny profil</button>
+                    <button className="px-3 py-1.5 rounded-xl border" onClick={signOut}>Logga ut</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-6 grid md:grid-cols-[260px,1fr] gap-6">
+        {/* Sidebar – Users */}
+        <aside className="bg-white rounded-2xl shadow-sm border p-3 h-fit">
+          <h2 className="text-lg font-semibold mb-2">Användare i profilen</h2>
+          <ul className="space-y-1">
+            {users.map(u => (
+              <li
+                key={u.id}
+                className={`flex items-center justify-between rounded-xl px-2 py-1 ${selectedId === u.id ? "bg-slate-100" : ""}`}
+              >
+                <button onClick={() => setSelectedId(u.id)} className="text-left grow">
+                  <div className="font-medium">{u.name || "Namnlös"}</div>
+                  <div className="text-xs text-slate-500">1RM: {u.oneRmKg} kg · Arbets-1RM: {u.workingRmKg} kg</div>
+                </button>
+                <button onClick={() => removeUser(u.id)} className="text-slate-500 hover:text-rose-600" title="Ta bort">✕</button>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3">
+            <button onClick={addUser} className="w-full px-3 py-1.5 rounded-xl bg-slate-900 text-white hover:opacity-90">+ Ny användare</button>
+          </div>
+        </aside>
+
+        {/* Content */}
+        <section className="space-y-6">
+          {!selected ? (
+            <div className="bg-white rounded-2xl shadow-sm border p-6 text-center">
+              <p className="text-slate-600">Lägg till en användare för att börja.</p>
+            </div>
+          ) : (
+            <>
+              {/* Settings card */}
+              <div className="bg-white rounded-2xl shadow-sm border p-6">
+                <h2 className="text-lg font-semibold mb-4">Profil & inställningar</h2>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Namn</span>
+                    <input className="rounded-xl border px-3 py-2" value={selected.name} onChange={e=>updateSelected({name:e.target.value})} />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Startdatum</span>
+                    <input type="date" className="rounded-xl border px-3 py-2" value={selected.startDate} onChange={e=>updateSelected({startDate:e.target.value})} />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">1RM (kg)</span>
+                    <input type="number" className="rounded-xl border px-3 py-2" value={selected.oneRmKg}
+                      onChange={e=>{ const v = Number(e.target.value || 0); updateSelected({ oneRmKg: v, workingRmKg: v }); }} />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Arbets-1RM (kg) · används för beräkning</span>
+                    <div className="flex gap-2">
+                      <input type="number" className="rounded-xl border px-3 py-2 grow" value={selected.workingRmKg} onChange={e=>updateSelected({ workingRmKg: Number(e.target.value || 0) })} />
+                      <button className="px-3 py-2 rounded-xl border" title="Återställ till 1RM" onClick={()=>updateSelected({ workingRmKg: selected.oneRmKg })}>↺</button>
+                    </div>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Avrundning (kg-steg)</span>
+                    <select className="rounded-xl border px-3 py-2" value={selected.rounding} onChange={e=>updateSelected({ rounding: Number(e.target.value) })}>
+                      {[1,1.25,2,2.5,5].map(s=> <option key={s} value={s}>{s.toFixed(2).replace(/\.00$/, "")} kg</option>)}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 md:col-span-2">
+                    <span className="text-sm text-slate-600">Anteckningar</span>
+                    <textarea rows={2} className="rounded-xl border px-3 py-2" value={selected.notes||""} onChange={e=>updateSelected({notes:e.target.value})}/>
+                  </label>
+                </div>
+                <div className="mt-4 flex items-center gap-3">
+                  <button onClick={resetLogs} className="px-3 py-2 rounded-xl border">Rensa loggar</button>
+                </div>
+              </div>
+
+              {/* Plan */}
+              <div className="grid md:grid-cols-2 gap-6">
+                {WORKOUTS.map(w => {
+                  const rows = prescriptions[w.id] || [];
+                  const log = selected.logs?.[w.id] || { sets: [], done: false, failureReps: undefined };
+                  return (
+                    <article key={w.id} className={`rounded-2xl border shadow-sm bg-white p-4 ${log.done ? "ring-2 ring-green-500/40" : ""}`}>
+                      <header className="flex items-start justify-between mb-2">
+                        <div>
+                          <h3 className="font-semibold">{w.name}</h3>
+                          <p className="text-xs text-slate-500">Beräknat från arbets-1RM {selected.workingRmKg} kg</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={()=>markDone(w.id, !log.done)} className={`px-2.5 py-1.5 rounded-xl border text-sm ${log.done ? "bg-green-600 text-white border-green-600" : ""}`}>{log.done?"Klart":"Markera klart"}</button>
+                        </div>
+                      </header>
+
+                      <table className="w-full text-sm border-separate" style={{borderSpacing:"0 6px"}}>
+                        <thead>
+                          <tr className="text-left text-slate-500">
+                            <th className="font-medium">Set</th>
+                            <th className="font-medium">Reps</th>
+                            <th className="font-medium">Rek. vikt</th>
+                            <th className="font-medium">Logg</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r, idx) => (
+                            <tr key={idx} className="align-top">
+                              <td className="py-1 pr-2 whitespace-nowrap">{r.label}</td>
+                              <td className="py-1 pr-2">{String(r.reps)}</td>
+                              <td className="py-1 pr-2">{r.targetKg} kg</td>
+                              <td className="py-1">
+                                <div className="flex gap-2">
+                                  <input type="number" placeholder="kg" className="w-24 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.actualKg ?? ""}
+                                    onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), actualKg: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
+                                  <input type="number" placeholder="reps" className="w-20 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.reps ?? ""}
+                                    onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), reps: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      {rows.some(r=>r.kind === "failure") && (
+                        <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 p-3">
+                          <div className="text-sm mb-2 font-medium">Failure Test</div>
+                          <p className="text-sm text-slate-600 mb-2">Kör så många reps som möjligt med block #2‑vikten ({rows[1]?.targetKg} kg).
+                            4–7 reps = oförändrat · ≤3 reps = −2.5 kg · ≥8 reps = +2.5 kg på arbets-1RM.</p>
+                          <div className="flex items-center gap-2">
+                            <input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ""} onChange={e=>writeLog(w.id, { ...log, failureReps: Number(e.target.value||0) })} />
+                            <button className="px-3 py-2 rounded-xl border" onClick={()=>applyFailure(w.id, log.failureReps)}>Tillämpa ±2.5 kg</button>
+                            <button className="px-3 py-2 rounded-xl border" title="Skatta nytt 1RM via Epley" onClick={()=>setEpleyFromFailure(w.id, log.failureReps)}>Sätt 1RM via Epley</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {rows.some(r=>r.kind === "negative") && (
+                        <div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1×1 (~{Math.round(getPercentsForWorkout(w.id)[2]*100)}% av 1RM). Spotta säkert.</div>
+                      )}
+                      {rows.some(r=>r.kind === "max") && (
+                        <div className="mt-3 text-xs text-slate-600">Max‑test: försök nytt 1RM. Värm upp smart, ha spotter, bänkkommandon om du tävlar.</div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+
+              <div className="rounded-2xl border shadow-sm bg-white p-4 text-sm text-slate-600">
+                <h3 className="font-semibold mb-2">Tips & upplägg (kortversion)</h3>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Två bänkpass/vecka enligt schemat ovan (14 bänkpass totalt).</li>
+                  <li>Udda pass använder 6:or/5:or + Failure Test; jämna pass är tyngre (3:or/1:or) och vissa innehåller negativa set.</li>
+                  <li>Vikterna ovan är beräknade från ditt arbets-1RM i kg och avrundas till närmaste {selected.rounding} kg.</li>
+                  <li>Efter avslutat program: lägg in 2–3 lugnare veckor ≤80% av 1RM innan nästa cykel.</li>
+                </ul>
+              </div>
+            </>
+          )}
+        </section>
+      </main>
+
+      <footer className="mx-auto max-w-6xl px-4 pb-10 text-xs text-slate-500">
+        <div className="mt-6">Byggt för att efterlikna MM2K‑upplägget. Struktur och set/reps följer originalet; vikter räknas i kg via procent‑approximation.</div>
+      </footer>
+    </div>
+  );
+}
+
