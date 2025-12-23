@@ -1,0 +1,9 @@
+  263  npm run dev
+  264  history|grep push
+  265  history
+  266  pwd
+  267  pwd
+  268  git add .
+  269  git commit -m "version 0.1"
+  270  ls -ltr
+  271  git push
