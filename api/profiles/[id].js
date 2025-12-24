@@ -1,17 +1,23 @@
-// /api/profiles/[id].js
 import { head } from '@vercel/blob';
 
 export default async function handler(req, res) {
   const { id } = req.query || {};
-  if (!id) return res.status(400).json({ error: 'missing id' });
+  if (!id) return res.status(400).json({ error: 'Missing id' });
 
-  const pathname = `profiles/${id}.json`;
   try {
-    // Hämta blobens URL och läs JSON:en
-    const meta = await head(pathname);
-    const data = await fetch(meta.url).then(r => r.json());
-    return res.status(200).json(data);
+    // Hämta metadata för att få publik URL
+    const meta = await head(`profiles/${id}.json`, {
+      token: process.env.BLOB_READ_WRITE_TOKEN
+    });
+
+    const url = meta.downloadUrl || meta.url;   // båda fungerar för GET
+    const json = await fetch(url).then(r => {
+      if (!r.ok) throw new Error('Not found');
+      return r.json();
+    });
+
+    res.status(200).json(json);
   } catch (e) {
-    return res.status(404).json({ error: 'not found' });
+    res.status(404).json({ error: 'Not found' });
   }
 }

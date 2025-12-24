@@ -1,26 +1,27 @@
-// /api/profiles/save.js
 import { put } from '@vercel/blob';
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).end('Method Not Allowed');
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { accountId, profile } = req.body || {};
-  if (!accountId || !profile) {
-    return res.status(400).json({ error: 'accountId + profile required' });
+  try {
+    const { accountId, profile } = req.body ?? {};
+    if (!accountId || !profile) return res.status(400).json({ error: 'Missing accountId or profile' });
+
+    const pathname = `profiles/${accountId}.json`;
+
+    const { url, pathname: saved } = await put(
+      pathname,
+      JSON.stringify(profile),
+      {
+        access: 'public',                 // ← viktigt: public
+        contentType: 'application/json',
+        addRandomSuffix: false,           // stabil filväg (överskriv samma fil)
+        token: process.env.BLOB_READ_WRITE_TOKEN
+      }
+    );
+
+    res.status(200).json({ ok: true, url, pathname: saved });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Upload failed' });
   }
-
-  // En stabil sökväg per profil (”mappar” skapas av prefixet automatiskt)
-  const pathname = `profiles/${accountId}.json`;
-
-  const { url } = await put(
-    pathname,
-    JSON.stringify(profile, null, 2),
-    {
-      access: 'private',        // profiler ska inte vara publika
-      contentType: 'application/json',
-      addRandomSuffix: false,   // så att URL:en inte ändras varje gång
-    }
-  );
-
-  return res.status(200).json({ ok: true, url });
 }
