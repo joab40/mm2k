@@ -1,32 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// MM2K Bench – 6 veckor, 14 pass.
-// Nu med: 
-// - Ogenomskinligt Blob-ID per profil (serverfil: profiles/<blobKey>.json)
-// - Historiksnapshots vid varje server-spara (profiles/<blobKey>/history/<ISO>.json)
-// - FT-bekräftelse kan bara göras en gång per pass (ftApplied=true)
-// - Inga ändringar tillåts när ett pass är markerat Klart (inputs/knappar disable)
-// - UTF-8 och Tailwind v3-kompatibel
+// NOTE: ASCII-only, no block comments, no fancy unicode. This avoids parser edge cases.
+// MM2K Bench app with Vercel Blob save/load. Designed for Vite + @vitejs/plugin-react.
 
 const ACCOUNTS_KEY = "mm2k_accounts_v1";
 const CURRENT_ACCOUNT_KEY = "mm2k_current_account_v1";
 const LEGACY_USERS_KEY = "mm2k_users_v1";
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
-function generateOpaqueKey() {
-  if (globalThis.crypto?.randomUUID) return crypto.randomUUID().replace(/-/g, "");
-  try {
-    const a = new Uint8Array(16);
-    globalThis.crypto.getRandomValues(a);
-    return Array.from(a, x => x.toString(16).padStart(2, "0")).join("");
-  } catch { return uid() + uid(); }
-}
-function usersKey(accountId) { return `mm2k_users_v1_${accountId || "default"}`; }
+function keyForUsers(accountId) { return `mm2k_users_v1_${accountId || "default"}`; }
 function loadAccounts() { try { const s = localStorage.getItem(ACCOUNTS_KEY); const a = s ? JSON.parse(s) : []; return Array.isArray(a) ? a : []; } catch { return []; } }
 function saveAccounts(a) { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(a)); }
-function migrateLegacyUsers(accountId) { try { const legacy = localStorage.getItem(LEGACY_USERS_KEY); const k = usersKey(accountId); if (legacy && !localStorage.getItem(k)) localStorage.setItem(k, legacy); } catch {} }
-function loadUsers(accountId) { try { if (!accountId) return []; migrateLegacyUsers(accountId); const raw = localStorage.getItem(usersKey(accountId)); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; } catch { return []; } }
-function saveUsers(accountId, users) { if (!accountId) return; localStorage.setItem(usersKey(accountId), JSON.stringify(users)); }
+function migrateLegacyUsers(accountId) { try { const legacy = localStorage.getItem(LEGACY_USERS_KEY); const k = keyForUsers(accountId); if (legacy && !localStorage.getItem(k)) localStorage.setItem(k, legacy); } catch {} }
+function loadUsers(accountId) { try { if (!accountId) return []; migrateLegacyUsers(accountId); const raw = localStorage.getItem(keyForUsers(accountId)); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; } catch { return []; } }
+function saveUsers(accountId, users) { if (!accountId) return; localStorage.setItem(keyForUsers(accountId), JSON.stringify(users)); }
 
 const WORKOUTS = [
   { id: 1,  name: "Workout #1",  blocks: [ { sets: 1, reps: 8,  kind: "work" }, { sets: 1, reps: 6,  kind: "work" }, { sets: 3, reps: 5,  kind: "work" } ] },
@@ -42,12 +29,27 @@ const WORKOUTS = [
   { id: 11, name: "Workout #11 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
   { id: 12, name: "Workout #12", blocks: [ { sets: 2, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "single" } ] },
   { id: 13, name: "Workout #13 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
-  { id: 14, name: "Workout #14 (Max Test)", blocks: [ { sets: 1, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "max" } ] },
+  { id: 14, name: "Workout #14 (Max Test)", blocks: [ { sets: 1, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "max" } ] }
 ];
 
 function getPercentsForWorkout(w) {
-  const P = { 1:[0.60,0.70,0.80], 2:[0.70,0.80,0.90], 3:[0.65,0.75,0.85], 4:[0.75,0.85,1.00], 5:[0.70,0.80,0.85], 6:[0.85,0.95,1.10], 7:[0.75,0.85,0.90], 8:[0.90,0.97,1.12], 9:[0.76,0.88,0.92], 10:[0.92,0.98,1.13], 11:[0.78,0.90,0.95], 12:[0.95,1.00,1.05], 13:[0.80,0.92,0.97], 14:[1.00,1.08,1.15] };
-  return P[w] || [0.7,0.8,0.9];
+  const P = {
+    1:  [0.60, 0.70, 0.80],
+    2:  [0.70, 0.80, 0.90],
+    3:  [0.65, 0.75, 0.85],
+    4:  [0.75, 0.85, 1.00],
+    5:  [0.70, 0.80, 0.85],
+    6:  [0.85, 0.95, 1.10],
+    7:  [0.75, 0.85, 0.90],
+    8:  [0.90, 0.97, 1.12],
+    9:  [0.76, 0.88, 0.92],
+    10: [0.92, 0.98, 1.13],
+    11: [0.78, 0.90, 0.95],
+    12: [0.95, 1.00, 1.05],
+    13: [0.80, 0.92, 0.97],
+    14: [1.00, 1.08, 1.15]
+  };
+  return P[w] || [0.7, 0.8, 0.9];
 }
 
 const KG_STEP_DEFAULT = 2.5;
@@ -64,7 +66,12 @@ function buildPrescription(id, rm, step) {
   });
   return rows;
 }
-function calcFtDelta(reps) { if (!Number.isFinite(reps)) return 0; if (reps >= 8) return +2.5; if (reps <= 3) return -2.5; return 0; }
+function applyFailureAdj(currentRm, reps) {
+  if (!Number.isFinite(reps)) return currentRm;
+  if (reps >= 8) return roundToStep(currentRm + 2.5, 0.5);
+  if (reps <= 3) return roundToStep(Math.max(0, currentRm - 2.5), 0.5);
+  return currentRm;
+}
 
 const BTN_BASE = "h-9 px-3 rounded-xl border inline-flex items-center justify-center gap-2 text-sm font-medium transition-colors";
 const BTN_SOLID = "bg-slate-900 text-white border-slate-900 hover:opacity-90";
@@ -74,19 +81,13 @@ const BTN_BAD = "bg-rose-100 text-rose-900 border-rose-300 hover:bg-rose-200";
 
 function LiftEmoji({ className = "text-6xl md:text-7xl" }) { return <span className={className} role="img" aria-label="weightlifter">🏋️‍♂️</span>; }
 
-const NEW_USER = () => ({ id: uid(), name: "", startDate: new Date().toISOString().slice(0,10), oneRmKg: 100, workingRmKg: 100, rounding: KG_STEP_DEFAULT, notes: "", logs: {} });
+const NEW_USER = () => ({ id: uid(), name: "", startDate: new Date().toISOString().slice(0, 10), oneRmKg: 100, workingRmKg: 100, rounding: KG_STEP_DEFAULT, notes: "", logs: {} });
 
 export default function App() {
   const [accounts, setAccounts] = useState(loadAccounts());
   const [accountId, setAccountId] = useState(() => localStorage.getItem(CURRENT_ACCOUNT_KEY) || (loadAccounts()[0]?.id || null));
   useEffect(() => { saveAccounts(accounts); }, [accounts]);
   useEffect(() => { if (accountId) localStorage.setItem(CURRENT_ACCOUNT_KEY, String(accountId)); }, [accountId]);
-
-  // Se till att alla konton har blobKey (ogenomskinligt ID) – migrationssteg
-  useEffect(() => {
-    const next = accounts.map(a => a.blobKey ? a : { ...a, blobKey: generateOpaqueKey() });
-    if (JSON.stringify(next) !== JSON.stringify(accounts)) setAccounts(next);
-  }, []); // endast en gång
 
   const [users, setUsers] = useState(() => loadUsers(accountId));
   useEffect(() => { setUsers(loadUsers(accountId)); }, [accountId]);
@@ -104,9 +105,9 @@ export default function App() {
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 3000); return () => clearTimeout(t); }, [toast]);
 
   function createAccount() {
-    const label = window.prompt("Profilnamn (t.ex. Johan, Ebba)") || "Profil";
+    const label = window.prompt("Profilnamn (t.ex. Vide)") || "Profil";
     const pin = window.prompt("Valfri PIN (lämna tomt)") || "";
-    const acc = { id: uid(), label, pin: pin.trim() ? pin.trim() : null, blobKey: generateOpaqueKey(), createdAt: new Date().toISOString() };
+    const acc = { id: uid(), label, pin: pin.trim() ? pin.trim() : null, createdAt: new Date().toISOString() };
     const next = [...accounts, acc]; setAccounts(next); setAccountId(acc.id);
   }
   function deleteAccount(id) {
@@ -129,7 +130,6 @@ export default function App() {
     const out = {}; for (const w of WORKOUTS) out[w.id] = buildPrescription(w.id, selected.workingRmKg, selected.rounding); return out;
   }, [selected]);
 
-  // Prognos bygger på faktiska FT-utfall (ftDelta) när ftApplied=true. Fallback: reps.
   const projected = useMemo(() => {
     if (!selected) return null;
     const FT = [5,7,9,11,13];
@@ -137,11 +137,7 @@ export default function App() {
     let delta = 0; let completed = 0;
     for (const id of FT) {
       const log = selected.logs?.[id];
-      if (log?.done) {
-        completed++;
-        if (log.ftApplied) delta += Number(log.ftDelta || 0);
-        else if (Number.isFinite(log?.failureReps)) delta += calcFtDelta(Number(log.failureReps));
-      }
+      if (log?.done) { completed++; const r = Number(log.failureReps); if (Number.isFinite(r)) delta += (r >= 8 ? 2.5 : (r <= 3 ? -2.5 : 0)); }
     }
     const remaining = FT.length - completed;
     const point = roundToStep(base + delta, 0.5);
@@ -155,10 +151,7 @@ export default function App() {
       const old = log?.sets?.[idx] || {};
       const actualKg = Number.isFinite(old.actualKg) ? old.actualKg : r.targetKg;
       let reps;
-      if (Number.isFinite(old.reps)) reps = old.reps;
-      else if (typeof r.reps === "number") reps = r.reps;
-      else if (r.kind === "failure") reps = Number.isFinite(failureRepsVal) ? Number(failureRepsVal) : 0;
-      else reps = 0;
+      if (Number.isFinite(old.reps)) reps = old.reps; else if (typeof r.reps === "number") reps = r.reps; else if (r.kind === "failure") reps = Number.isFinite(failureRepsVal) ? Number(failureRepsVal) : 0; else reps = 0;
       return { actualKg, reps };
     });
   }
@@ -170,25 +163,19 @@ export default function App() {
       const sets = ensureDefaultSets(prev, rowsNow, prev.failureReps);
       writeLog(workoutId, { ...prev, sets, done: true, doneAt: new Date().toISOString(), lockedRmKg: selected.workingRmKg, lockedRounding: selected.rounding, lockedRows: rowsNow });
     } else if (!done && prev.done) {
-      // Låter användaren låsa upp igen (men FT kan fortfarande bara appliceras en gång via ftApplied)
       const { lockedRmKg, lockedRounding, lockedRows, doneAt, ...rest } = prev; writeLog(workoutId, { ...rest, done: false });
     } else { writeLog(workoutId, { ...prev, done }); }
   }
   function confirmFailure(workoutId) {
     if (!selected) return; const log = selected.logs?.[workoutId] || {};
-    if (log.ftApplied) { setToast({ type: "note", msg: "Failure Test är redan bekräftat för detta pass." }); return; }
     const rowsNow = (log?.done && Array.isArray(log.lockedRows) && log.lockedRows.length) ? log.lockedRows : (prescriptions[workoutId] || []);
     const reps = Number(log.failureReps);
-    const ftDelta = calcFtDelta(reps);
+    const newRm = applyFailureAdj(selected.workingRmKg, reps);
     const sets = ensureDefaultSets(log, rowsNow, reps);
-    // Skriv logg och lås passet först
     writeLog(workoutId, { ...log, sets, failureReps: reps });
     markDone(workoutId, true, { forceRows: rowsNow });
-    // Applicera FT-ändring EN gång
-    writeLog(workoutId, { ...log, sets, failureReps: reps, ftApplied: true, ftDelta });
-    if (ftDelta !== 0) updateSelected({ workingRmKg: roundToStep(selected.workingRmKg + ftDelta, 0.5) });
-    if (ftDelta > 0) setToast({ type: "up", msg: "Grattis! Failure Test klarat (+2.5 kg)" });
-    if (ftDelta < 0) setToast({ type: "note", msg: "Vikten har sänkts (-2.5 kg) enligt Failure Test." });
+    if (Number.isFinite(reps) && reps >= 8) setToast({ type: "up", msg: "Grattis! Failure Test klarat (+2.5 kg)" });
+    updateSelected({ workingRmKg: newRm });
   }
 
   function exportProfile() {
@@ -201,16 +188,16 @@ export default function App() {
   }
 
   async function saveRemoteProfile() {
-    if (!accountId) return; const active = accounts.find(a => a.id === accountId); const blobKey = active?.blobKey || active?.id; setBusy(true);
+    if (!accountId) return; setBusy(true);
     try {
-      const r = await fetch('/api/profiles/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ blobKey, profile: { users } }) });
+      const r = await fetch('/api/profiles/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId, profile: { users } }) });
       if (!r.ok) throw new Error('Save failed'); setToast({ type: 'up', msg: 'Sparat till server (Blob)'});
     } catch (e) { alert('Kunde inte spara: ' + e.message); } finally { setBusy(false); }
   }
   async function loadRemoteProfile() {
-    if (!accountId) return; const active = accounts.find(a => a.id === accountId); const blobKey = active?.blobKey || active?.id; setBusy(true);
+    if (!accountId) return; setBusy(true);
     try {
-      const r = await fetch(`/api/profiles/${blobKey}`);
+      const r = await fetch(`/api/profiles/${accountId}`);
       if (!r.ok) throw new Error('Hittar ingen serverprofil'); const data = await r.json();
       if (Array.isArray(data.users)) setUsers(data.users); else alert('Svar saknar users[]'); setToast({ type: 'up', msg: 'Laddat från server (Blob)'});
     } catch (e) { alert('Kunde inte ladda: ' + e.message); } finally { setBusy(false); }
@@ -282,7 +269,7 @@ export default function App() {
                         <li key={a.id} className="flex items-center justify-between rounded-lg hover:bg-slate-50 px-2 py-1">
                           <button className="text-left" onClick={() => switchAccount(a)}>
                             <div className="font-medium">{a.label}</div>
-                            <div className="text-xs text-slate-500">{a.pin ? 'PIN-skyddad' : 'Ingen PIN'} · Blob-ID: {a.blobKey?.slice(0,8)}…</div>
+                            <div className="text-xs text-slate-500">{a.pin ? 'PIN-skyddad' : 'Ingen PIN'}</div>
                           </button>
                           <button className="text-slate-500 hover:text-rose-600" onClick={() => deleteAccount(a.id)} title="Ta bort">✕</button>
                         </li>
@@ -348,7 +335,6 @@ export default function App() {
                   const suggestion = (typeof reps === "number" && !Number.isNaN(reps)) ? (reps >= 8 ? "increase" : (reps <= 3 ? "decrease" : "hold")) : null;
                   const proposedUp = roundToStep(selected.workingRmKg + 2.5, 0.5);
                   const proposedDown = roundToStep(Math.max(0, selected.workingRmKg - 2.5), 0.5);
-                  const isLocked = !!log.done; // inga ändringar när Klart
 
                   return (
                     <article key={w.id} className={`rounded-2xl border shadow-sm bg-white p-4 ${log.done ? 'ring-2 ring-green-500/40' : ''}`}>
@@ -356,7 +342,6 @@ export default function App() {
                         <div>
                           <h3 className="font-semibold">{w.name}</h3>
                           <p className="text-xs text-slate-500">Beräknat från arbets-1RM {selected.workingRmKg} kg{log.done && log.doneAt ? ` (låst ${new Date(log.doneAt).toLocaleDateString()})` : ''}</p>
-                          {log.ftApplied && (<div className="mt-1 inline-flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-0.5">FT bekräftad {log.ftDelta>0?`(+${log.ftDelta} kg)`:log.ftDelta<0?`(${log.ftDelta} kg)`:"(±0 kg)"}</div>)}
                         </div>
                         <div className="flex items-center gap-2">
                           <button onClick={()=>markDone(w.id, !log.done)} className={`${BTN_BASE} ${log.done ? BTN_GOOD : BTN_SUBTLE}`}>{log.done?'Klart':'Markera klart'}</button>
@@ -375,10 +360,8 @@ export default function App() {
                               <td className="py-1 pr-2">{r.targetKg} kg</td>
                               <td className="py-1">
                                 <div className="flex gap-2">
-                                  <input type="number" placeholder="kg" className="w-24 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.actualKg ?? ''} disabled={isLocked}
-                                    onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), actualKg: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
-                                  <input type="number" placeholder="reps" className="w-20 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.reps ?? ''} disabled={isLocked}
-                                    onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), reps: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
+                                  <input type="number" placeholder="kg" className="w-24 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.actualKg ?? ''} onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), actualKg: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
+                                  <input type="number" placeholder="reps" className="w-20 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.reps ?? ''} onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), reps: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
                                 </div>
                               </td>
                             </tr>
@@ -387,29 +370,22 @@ export default function App() {
                       </table>
 
                       {rows.some(r=>r.kind === "failure") && (
-                        <div className={`mt-4 rounded-xl ${isLocked? 'bg-slate-50 border border-slate-200' : 'bg-amber-50 border border-amber-200'} p-3`}>
+                        <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 p-3">
                           <div className="text-sm mb-2 font-medium">Failure Test</div>
-                          <p className="text-sm text-slate-600 mb-2">Max reps med block 2-vikten ({rows[1]?.targetKg} kg). 4–7 reps: ingen ändring. ≤3: −2.5 kg. ≥8: +2.5 kg.</p>
-                          <div className="flex items-center gap-2 mb-2">
-                            <input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ''} disabled={isLocked || log.ftApplied}
-                              onChange={e=>writeLog(w.id, { ...log, failureReps: Number(e.target.value||0) })} />
-                          </div>
-                          {!isLocked && !log.ftApplied && (
-                            <div className="flex flex-wrap items-center gap-2 text-sm">
-                              {suggestion === 'increase' && <><span>Föreslagen ändring:</span><span className="font-medium">+2.5 kg</span><span>({selected.workingRmKg} → {proposedUp} kg)</span></>}
-                              {suggestion === 'decrease' && <><span>Föreslagen ändring:</span><span className="font-medium">-2.5 kg</span><span>({selected.workingRmKg} → {proposedDown} kg)</span></>}
-                              {suggestion === 'hold' && <span>Ingen ändring föreslås för {reps} reps.</span>}
-                              <button className={`${BTN_BASE} ${suggestion==='decrease'?BTN_BAD:BTN_GOOD}`} onClick={()=>confirmFailure(w.id)} disabled={typeof reps!=="number" || Number.isNaN(reps)}>Bekräfta</button>
-                            </div>
+                          <p className="text-sm text-slate-600 mb-2">Max reps med block 2-vikten ({rows[1]?.targetKg} kg). 4-7 reps ingen andring. 3 eller mindre -2.5 kg. 8 eller fler +2.5 kg.</p>
+                          <div className="flex items-center gap-2 mb-2"><input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ''} onChange={e=>writeLog(w.id, { ...log, failureReps: Number(e.target.value||0) })} /></div>
+                          {suggestion === 'increase' && (
+                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Föreslagen ändring:</span><span className="font-medium">+2.5 kg</span><span>({selected.workingRmKg} → {proposedUp} kg)</span><button className={`${BTN_BASE} ${BTN_GOOD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
                           )}
-                          {(isLocked || log.ftApplied) && (
-                            <div className="text-xs text-slate-600">Detta pass är låst – inga ändringar tillåtna.</div>
+                          {suggestion === 'decrease' && (
+                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Föreslagen ändring:</span><span className="font-medium">-2.5 kg</span><span>({selected.workingRmKg} → {proposedDown} kg)</span><button className={`${BTN_BASE} ${BTN_BAD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
                           )}
+                          {suggestion === 'hold' && (<div className="text-xs text-slate-600">Ingen andring foreslas for {reps} reps.</div>)}
                         </div>
                       )}
 
-                      {rows.some(r=>r.kind === "negative") && (<div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1×1 (~{Math.round(getPercentsForWorkout(w.id)[2]*100)}% av 1RM). Spotta säkert.</div>)}
-                      {rows.some(r=>r.kind === "max") && (<div className="mt-3 text-xs text-slate-600">Max-test: försök nytt 1RM.</div>)}
+                      {rows.some(r=>r.kind === "negative") && (<div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1x1 (~{Math.round(getPercentsForWorkout(w.id)[2]*100)}% av 1RM). Spotta sakert.</div>)}
+                      {rows.some(r=>r.kind === "max") && (<div className="mt-3 text-xs text-slate-600">Max-test: forsok nytt 1RM.</div>)}
                     </article>
                   );
                 })}
@@ -419,9 +395,9 @@ export default function App() {
                 <h3 className="font-semibold mb-2">Tips och upplägg</h3>
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Två bänkpass per vecka, 14 totalt.</li>
-                  <li>FT-dagar styr arbets-1RM (±2.5 kg). Negativ-dagar ligger över 110% av 1RM.</li>
-                  <li>Vikter beräknas från ditt arbets-1RM i kg och avrundas till närmaste valda steg.</li>
-                  <li>Sista passet siktar kring 115% av start-1RM; FT-utfall bygger vidare på det.</li>
+                  <li>FT-dagar styr arbets-1RM med plus minus 2.5 kg.</li>
+                  <li>Negativ-dagar ligger över 110 procent av 1RM.</li>
+                  <li>Sista passet siktar kring 115 procent av start-1RM.</li>
                 </ul>
               </div>
             </>
@@ -442,7 +418,7 @@ export default function App() {
       )}
 
       <footer className="mx-auto max-w-6xl px-4 pb-10 text-xs text-slate-500">
-        <div className="mt-6">Procentkurvan är tunad så att #14 ligger runt 115% av start-1RM. FT-utfall appliceras exakt en gång per FT-pass. Serverlagring via Vercel Blob med historik.</div>
+        <div className="mt-6">Procentkurvan tunad for att pass 14 ligger runt 115 procent av start-1RM. Serverlagring via Vercel Blob.</div>
       </footer>
     </div>
   );

@@ -2,25 +2,31 @@ import { put } from '@vercel/blob';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
   try {
-    const { accountId, profile } = req.body ?? {};
-    if (!accountId || !profile) return res.status(400).json({ error: 'Missing accountId or profile' });
+    const { blobKey, profile } = req.body ?? {};
+    if (!blobKey || !profile) return res.status(400).json({ error: 'blobKey + profile required' });
 
-    const pathname = `profiles/${accountId}.json`;
+    const mainPath = `profiles/${blobKey}.json`;
+    const body = JSON.stringify(profile, null, 2);
 
-    const { url, pathname: saved } = await put(
-      pathname,
-      JSON.stringify(profile),
-      {
-        access: 'public',                 // ← viktigt: public
-        contentType: 'application/json',
-        addRandomSuffix: false,           // stabil filväg (överskriv samma fil)
-        token: process.env.BLOB_READ_WRITE_TOKEN
-      }
-    );
+    // Skriv huvudfilen (publik, stabil sökväg)
+    await put(mainPath, body, {
+      access: 'public',
+      contentType: 'application/json',
+      addRandomSuffix: false,
+      token: process.env.BLOB_READ_WRITE_TOKEN
+    });
 
-    res.status(200).json({ ok: true, url, pathname: saved });
+    // Skriv snapshot i history/
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    await put(`profiles/${blobKey}/history/${ts}.json`, body, {
+      access: 'public',
+      contentType: 'application/json',
+      addRandomSuffix: false,
+      token: process.env.BLOB_READ_WRITE_TOKEN
+    });
+
+    res.status(200).json({ ok: true, key: blobKey });
   } catch (e) {
     res.status(500).json({ error: e.message || 'Upload failed' });
   }
