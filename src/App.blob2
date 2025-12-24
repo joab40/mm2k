@@ -105,7 +105,7 @@ export default function App() {
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 3000); return () => clearTimeout(t); }, [toast]);
 
   function createAccount() {
-    const label = window.prompt("Profilnamn (t.ex. Vide)") || "Profil";
+    const label = window.prompt("Profilnamn (t.ex. Johan, Ebba)") || "Profil";
     const pin = window.prompt("Valfri PIN (lämna tomt)") || "";
     const acc = { id: uid(), label, pin: pin.trim() ? pin.trim() : null, createdAt: new Date().toISOString() };
     const next = [...accounts, acc]; setAccounts(next); setAccountId(acc.id);
@@ -250,7 +250,7 @@ export default function App() {
               <LiftEmoji />
               <div>
                 <h1 className="text-2xl md:text-3xl font-black tracking-tight">MM2K Bench</h1>
-                <p className="text-sm md:text-base text-white/95">6 veckor, 14 pass, Kg-beräkningar, Failure-bekräftelse</p>
+                <p className="text-sm md:text-base text-white/95">6 veckor, 14 pass, Kg-berakningar, Failure-bekraftelse</p>
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -258,9 +258,9 @@ export default function App() {
               <button onClick={() => importRef.current?.click()} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Importera</button>
               <input ref={importRef} type="file" accept="application/json" className="hidden" onChange={e => e.target.files && importProfile(e.target.files[0])} />
               <button disabled={busy} onClick={saveRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Sparar...' : 'Spara till server'}</button>
-              <button disabled={busy} onClick={loadRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Laddar...' : 'Ladda från server'}</button>
+              <button disabled={busy} onClick={loadRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Laddar...' : 'Ladda fran server'}</button>
               <div className="relative">
-                <button onClick={() => setShowAccountPanel(v => !v)} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Profil: {active?.label || 'Okänd'}</button>
+                <button onClick={() => setShowAccountPanel(v => !v)} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Profil: {active?.label || 'Okand'}</button>
                 {showAccountPanel && (
                   <div className="absolute right-0 mt-2 w-72 bg-white text-slate-900 rounded-xl shadow-lg border p-2">
                     <div className="px-2 py-1 text-xs text-slate-500">Profiler</div>
@@ -289,12 +289,12 @@ export default function App() {
 
       <main className="mx-auto max-w-6xl px-4 py-6 grid md:grid-cols-[260px,1fr] gap-6">
         <aside className="bg-white rounded-2xl shadow-sm border p-3 h-fit">
-          <h2 className="text-lg font-semibold mb-2">Användare i profilen</h2>
+          <h2 className="text-lg font-semibold mb-2">Anvandare i profilen</h2>
           <ul className="space-y-1">
             {users.map(u => (
               <li key={u.id} className={`flex items-center justify-between rounded-xl px-2 py-1 ${selectedId === u.id ? 'bg-slate-100' : ''}`}>
                 <button onClick={() => setSelectedId(u.id)} className="text-left grow">
-                  <div className="font-medium">{u.name || 'Namnlös'}</div>
+                  <div className="font-medium">{u.name || 'Namslos'}</div>
                   <div className="text-xs text-slate-500">1RM: {u.oneRmKg} kg · Arbets-1RM: {u.workingRmKg} kg</div>
                 </button>
                 <button onClick={() => removeUser(u.id)} className="text-slate-500 hover:text-rose-600" title="Ta bort">✕</button>
@@ -302,26 +302,26 @@ export default function App() {
             ))}
           </ul>
           <div className="mt-3">
-            <button onClick={addUser} className={`${BTN_BASE} ${BTN_SOLID} w-full`}>+ Ny användare</button>
+            <button onClick={addUser} className={`${BTN_BASE} ${BTN_SOLID} w-full`}>+ Ny anvandare</button>
           </div>
         </aside>
 
         <section className="space-y-6">
           {!selected ? (
             <div className="bg-white rounded-2xl shadow-sm border p-6 text-center">
-              <p className="text-slate-600">Lägg till en användare för att börja.</p>
+              <p className="text-slate-600">Lagg till en anvandare for att borja.</p>
             </div>
           ) : (
             <>
               <div className="bg-white rounded-2xl shadow-sm border p-6">
-                <h2 className="text-lg font-semibold mb-4">Profil och inställningar</h2>
+                <h2 className="text-lg font-semibold mb-4">Profil och installningar</h2>
                 <div className="grid md:grid-cols-2 gap-4">
                   <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Namn</span><input className="rounded-xl border px-3 py-2" value={selected.name} onChange={e=>updateSelected({name:e.target.value})} /></label>
                   <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Startdatum</span><input type="date" className="rounded-xl border px-3 py-2" value={selected.startDate} onChange={e=>updateSelected({startDate:e.target.value})} /></label>
                   <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">1RM (kg)</span><input type="number" className="rounded-xl border px-3 py-2" value={selected.oneRmKg} onChange={e=>{ const v = Number(e.target.value || 0); updateSelected({ oneRmKg: v, workingRmKg: v }); }} /></label>
                   <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Arbets-1RM (kg)</span><div className="flex gap-2"><input type="number" className="rounded-xl border px-3 py-2 grow" value={selected.workingRmKg} onChange={e=>updateSelected({ workingRmKg: Number(e.target.value || 0) })} /><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>updateSelected({ workingRmKg: selected.oneRmKg })}>Reset</button></div></label>
                   <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Avrundning (kg-steg)</span><select className="rounded-xl border px-3 py-2" value={selected.rounding} onChange={e=>updateSelected({ rounding: Number(e.target.value) })}>{[1,1.25,2,2.5,5].map(s=> <option key={s} value={s}>{s}</option>)}</select></label>
-                  <div className="md:col-span-2"><div className="rounded-xl border p-3 bg-slate-50 text-sm">{projected ? (<><div className="font-medium">Prognos 1RM efter #14:</div><div>Bas (115% av start): <span className="font-medium">{roundToStep(selected.oneRmKg * 1.15, 0.5)} kg</span></div><div>Uppnått via Failure-test: <span className="font-medium">{projected.delta >= 0 ? '+' : ''}{projected.delta} kg</span></div><div className="mt-1">Intervall: <span className="font-semibold">{projected.min} – {projected.max} kg</span> (återstår {projected.remaining} FT)</div></>) : (<div>Ingen prognos tillgänglig.</div>)}</div></div>
+                  <div className="md:col-span-2"><div className="rounded-xl border p-3 bg-slate-50 text-sm">{projected ? (<><div className="font-medium">Prognos 1RM efter #14:</div><div>Bas (115% av start): <span className="font-medium">{roundToStep(selected.oneRmKg * 1.15, 0.5)} kg</span></div><div>Uppnatt via Failure-test: <span className="font-medium">{projected.delta >= 0 ? '+' : ''}{projected.delta} kg</span></div><div className="mt-1">Intervall: <span className="font-semibold">{projected.min} – {projected.max} kg</span> (aterstar {projected.remaining} FT)</div></>) : (<div>Ingen prognos tillganglig.</div>)}</div></div>
                   <label className="flex flex-col gap-1 md:col-span-2"><span className="text-sm text-slate-600">Anteckningar</span><textarea rows={2} className="rounded-xl border px-3 py-2" value={selected.notes||""} onChange={e=>updateSelected({notes:e.target.value})}/></label>
                 </div>
                 <div className="mt-4 flex items-center gap-3"><button onClick={resetLogs} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Rensa loggar</button></div>
@@ -341,7 +341,7 @@ export default function App() {
                       <header className="flex items-start justify-between mb-2">
                         <div>
                           <h3 className="font-semibold">{w.name}</h3>
-                          <p className="text-xs text-slate-500">Beräknat från arbets-1RM {selected.workingRmKg} kg{log.done && log.doneAt ? ` (låst ${new Date(log.doneAt).toLocaleDateString()})` : ''}</p>
+                          <p className="text-xs text-slate-500">Beraknat fran arbets-1RM {selected.workingRmKg} kg{log.done && log.doneAt ? ` (last ${new Date(log.doneAt).toLocaleDateString()})` : ''}</p>
                         </div>
                         <div className="flex items-center gap-2">
                           <button onClick={()=>markDone(w.id, !log.done)} className={`${BTN_BASE} ${log.done ? BTN_GOOD : BTN_SUBTLE}`}>{log.done?'Klart':'Markera klart'}</button>
@@ -375,10 +375,10 @@ export default function App() {
                           <p className="text-sm text-slate-600 mb-2">Max reps med block 2-vikten ({rows[1]?.targetKg} kg). 4-7 reps ingen andring. 3 eller mindre -2.5 kg. 8 eller fler +2.5 kg.</p>
                           <div className="flex items-center gap-2 mb-2"><input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ''} onChange={e=>writeLog(w.id, { ...log, failureReps: Number(e.target.value||0) })} /></div>
                           {suggestion === 'increase' && (
-                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Föreslagen ändring:</span><span className="font-medium">+2.5 kg</span><span>({selected.workingRmKg} → {proposedUp} kg)</span><button className={`${BTN_BASE} ${BTN_GOOD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
+                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Foreslagen andring:</span><span className="font-medium">+2.5 kg</span><span>({selected.workingRmKg} → {proposedUp} kg)</span><button className={`${BTN_BASE} ${BTN_GOOD}`} onClick={()=>confirmFailure(w.id)}>Bekrafta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
                           )}
                           {suggestion === 'decrease' && (
-                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Föreslagen ändring:</span><span className="font-medium">-2.5 kg</span><span>({selected.workingRmKg} → {proposedDown} kg)</span><button className={`${BTN_BASE} ${BTN_BAD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
+                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Foreslagen andring:</span><span className="font-medium">-2.5 kg</span><span>({selected.workingRmKg} → {proposedDown} kg)</span><button className={`${BTN_BASE} ${BTN_BAD}`} onClick={()=>confirmFailure(w.id)}>Bekrafta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
                           )}
                           {suggestion === 'hold' && (<div className="text-xs text-slate-600">Ingen andring foreslas for {reps} reps.</div>)}
                         </div>
@@ -392,11 +392,11 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl border shadow-sm bg-white p-4 text-sm text-slate-600">
-                <h3 className="font-semibold mb-2">Tips och upplägg</h3>
+                <h3 className="font-semibold mb-2">Tips och upplagg</h3>
                 <ul className="list-disc pl-5 space-y-1">
-                  <li>Två bänkpass per vecka, 14 totalt.</li>
+                  <li>Tva bankpass per vecka, 14 totalt.</li>
                   <li>FT-dagar styr arbets-1RM med plus minus 2.5 kg.</li>
-                  <li>Negativ-dagar ligger över 110 procent av 1RM.</li>
+                  <li>Negativ-dagar ligger over 110 procent av 1RM.</li>
                   <li>Sista passet siktar kring 115 procent av start-1RM.</li>
                 </ul>
               </div>

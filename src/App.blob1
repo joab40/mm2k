@@ -1,20 +1,36 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// NOTE: ASCII-only, no block comments, no fancy unicode. This avoids parser edge cases.
-// MM2K Bench app with Vercel Blob save/load. Designed for Vite + @vitejs/plugin-react.
+// MM2K (Muscle Media 2000) Bench Program - 6 weeks, 14 workouts
+// Single-file React app (App.jsx). Tailwind classes used for styling.
+// Features:
+// - Local-first profiles (simple "login") with optional PIN, stored in localStorage
+// - Multiple lifters (users) per profile
+// - MM2K structure: 14 workouts incl. Failure / Negative / Single / Max
+// - Weights in KG (user rounding), FT adjustments ±2.5 kg (~5 lb)
+// - Failure "Confirm" auto-marks workout done (locks snapshot)
+// - Default logging if sets/reps are empty at Confirm/Done
+// - Projection: base goal ≈ 115% of start 1RM at #14 + realized FT delta
+// - Clean buttons (solid/subtle/success/danger), larger emoji icon
+// - Vercel Blob integration via serverless routes: /api/profiles/save and /api/profiles/[id]
 
-const ACCOUNTS_KEY = "mm2k_accounts_v1";
-const CURRENT_ACCOUNT_KEY = "mm2k_current_account_v1";
-const LEGACY_USERS_KEY = "mm2k_users_v1";
+/************************
+ * Local storage helpers *
+ ************************/ 
+const ACCOUNTS_KEY = "mm2k_accounts_v1";             // array of {id,label,pin,createdAt}
+const CURRENT_ACCOUNT_KEY = "mm2k_current_account_v1"; // string id
+const LEGACY_USERS_KEY = "mm2k_users_v1";             // old global users store
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
-function keyForUsers(accountId) { return `mm2k_users_v1_${accountId || "default"}`; }
-function loadAccounts() { try { const s = localStorage.getItem(ACCOUNTS_KEY); const a = s ? JSON.parse(s) : []; return Array.isArray(a) ? a : []; } catch { return []; } }
-function saveAccounts(a) { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(a)); }
-function migrateLegacyUsers(accountId) { try { const legacy = localStorage.getItem(LEGACY_USERS_KEY); const k = keyForUsers(accountId); if (legacy && !localStorage.getItem(k)) localStorage.setItem(k, legacy); } catch {} }
-function loadUsers(accountId) { try { if (!accountId) return []; migrateLegacyUsers(accountId); const raw = localStorage.getItem(keyForUsers(accountId)); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; } catch { return []; } }
-function saveUsers(accountId, users) { if (!accountId) return; localStorage.setItem(keyForUsers(accountId), JSON.stringify(users)); }
+function getUsersStorageKey(accountId) { return `mm2k_users_v1_${accountId || "default"}`; }
+function loadAccounts() { try { const raw = localStorage.getItem(ACCOUNTS_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; } catch { return []; } }
+function saveAccounts(accounts) { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts)); }
+function migrateLegacyUsersIfAny(accountId) { try { const legacy = localStorage.getItem(LEGACY_USERS_KEY); const key = getUsersStorageKey(accountId); if (legacy && !localStorage.getItem(key)) { localStorage.setItem(key, legacy); } } catch {}
+function loadUsersForAccount(accountId) { try { if (!accountId) return []; migrateLegacyUsersIfAny(accountId); const raw = localStorage.getItem(getUsersStorageKey(accountId)); const parsed = raw ? JSON.parse(raw) : []; return Array.isArray(parsed) ? parsed : []; } catch { return []; } }
+function saveUsersForAccount(accountId, users) { if (!accountId) return; localStorage.setItem(getUsersStorageKey(accountId), JSON.stringify(users)); }
 
+/***********************************
+ * Program structure (14 workouts)  *
+ ***********************************/
 const WORKOUTS = [
   { id: 1,  name: "Workout #1",  blocks: [ { sets: 1, reps: 8,  kind: "work" }, { sets: 1, reps: 6,  kind: "work" }, { sets: 3, reps: 5,  kind: "work" } ] },
   { id: 2,  name: "Workout #2",  blocks: [ { sets: 2, reps: 5,  kind: "work" }, { sets: 2, reps: 3,  kind: "work" }, { sets: 1, reps: 1,  kind: "single" } ] },
@@ -29,9 +45,13 @@ const WORKOUTS = [
   { id: 11, name: "Workout #11 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
   { id: 12, name: "Workout #12", blocks: [ { sets: 2, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "single" } ] },
   { id: 13, name: "Workout #13 (Failure Test)", blocks: [ { sets: 1, reps: 6,  kind: "work" }, { sets: 2, reps: 5,  kind: "work" }, { sets: 1, reps: "FT", kind: "failure" } ] },
-  { id: 14, name: "Workout #14 (Max Test)", blocks: [ { sets: 1, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "max" } ] }
+  { id: 14, name: "Workout #14 (Max Test)", blocks: [ { sets: 1, reps: 3,  kind: "work" }, { sets: 1, reps: 2,  kind: "work" }, { sets: 1, reps: 1,  kind: "max" } ] },
 ];
 
+/*********************************************
+ * Percent progression tuned to MM2K outcome *
+ * Aim: #14 peak ≈ 115% of start 1RM, negatives >110%.
+ *********************************************/
 function getPercentsForWorkout(w) {
   const P = {
     1:  [0.60, 0.70, 0.80],
@@ -47,71 +67,95 @@ function getPercentsForWorkout(w) {
     11: [0.78, 0.90, 0.95],
     12: [0.95, 1.00, 1.05],
     13: [0.80, 0.92, 0.97],
-    14: [1.00, 1.08, 1.15]
+    14: [1.00, 1.08, 1.15],
   };
   return P[w] || [0.7, 0.8, 0.9];
 }
 
 const KG_STEP_DEFAULT = 2.5;
-function roundToStep(v, step = KG_STEP_DEFAULT) { if (!Number.isFinite(v)) return 0; return Math.round(v / step) * step; }
-function buildPrescription(id, rm, step) {
-  const [p1, p2, p3] = getPercentsForWorkout(id);
-  const blocks = WORKOUTS.find(w => w.id === id)?.blocks || [];
-  const ws = [ roundToStep(rm * p1, step), roundToStep(rm * p2, step), roundToStep(rm * p3, step) ];
+function roundToStep(value, step = KG_STEP_DEFAULT) { if (!Number.isFinite(value)) return 0; return Math.round(value / step) * step; }
+function kg(v) { return Number.isFinite(v) ? v : 0; }
+
+function buildWorkoutPrescription(workoutId, workingRmKg, rounding = KG_STEP_DEFAULT) {
+  const [p1, p2, p3] = getPercentsForWorkout(workoutId);
+  const blocks = WORKOUTS.find(w => w.id === workoutId)?.blocks || [];
+  const weights = [ roundToStep(kg(workingRmKg) * p1, rounding), roundToStep(kg(workingRmKg) * p2, rounding), roundToStep(kg(workingRmKg) * p3, rounding) ];
   const rows = [];
   blocks.forEach((b, i) => {
-    const base = b.kind === "failure" ? ws[1] : ws[i];
+    const base = (b.kind === "failure" ? weights[1] : weights[i]);
     const label = b.kind === "failure" ? "Failure Test" : b.kind === "negative" ? "Negative only" : b.kind === "max" ? "Max Test" : b.kind === "single" ? "Single" : "Work";
     for (let s = 0; s < b.sets; s++) rows.push({ kind: b.kind, label, reps: b.reps, targetKg: base });
   });
   return rows;
 }
-function applyFailureAdj(currentRm, reps) {
-  if (!Number.isFinite(reps)) return currentRm;
-  if (reps >= 8) return roundToStep(currentRm + 2.5, 0.5);
-  if (reps <= 3) return roundToStep(Math.max(0, currentRm - 2.5), 0.5);
-  return currentRm;
+
+/***************************
+ * Failure adjustments etc. *
+ ***************************/
+function applyFailureAdjustment(currentRmKg, testWeightKg, achievedReps) {
+  if (!Number.isFinite(achievedReps)) return currentRmKg;
+  if (achievedReps >= 8) return roundToStep(currentRmKg + 2.5, 0.5);
+  if (achievedReps <= 3) return roundToStep(Math.max(0, currentRmKg - 2.5), 0.5);
+  return currentRmKg;
 }
 
+/*********************
+ * UI helpers (buttons)
+ *********************/
 const BTN_BASE = "h-9 px-3 rounded-xl border inline-flex items-center justify-center gap-2 text-sm font-medium transition-colors";
 const BTN_SOLID = "bg-slate-900 text-white border-slate-900 hover:opacity-90";
 const BTN_SUBTLE = "bg-white text-slate-900 border-slate-200 hover:bg-slate-100";
 const BTN_GOOD = "bg-emerald-100 text-emerald-900 border-emerald-300 hover:bg-emerald-200";
 const BTN_BAD = "bg-rose-100 text-rose-900 border-rose-300 hover:bg-rose-200";
 
+/*********************
+ * Emoji icon
+ *********************/
 function LiftEmoji({ className = "text-6xl md:text-7xl" }) { return <span className={className} role="img" aria-label="weightlifter">🏋️‍♂️</span>; }
 
+/*********************
+ * Data models
+ *********************/
 const NEW_USER = () => ({ id: uid(), name: "", startDate: new Date().toISOString().slice(0, 10), oneRmKg: 100, workingRmKg: 100, rounding: KG_STEP_DEFAULT, notes: "", logs: {} });
 
+/****************
+ * Main component
+ ****************/
 export default function App() {
+  // Profiles (local login)
   const [accounts, setAccounts] = useState(loadAccounts());
   const [accountId, setAccountId] = useState(() => localStorage.getItem(CURRENT_ACCOUNT_KEY) || (loadAccounts()[0]?.id || null));
+
   useEffect(() => { saveAccounts(accounts); }, [accounts]);
   useEffect(() => { if (accountId) localStorage.setItem(CURRENT_ACCOUNT_KEY, String(accountId)); }, [accountId]);
 
-  const [users, setUsers] = useState(() => loadUsers(accountId));
-  useEffect(() => { setUsers(loadUsers(accountId)); }, [accountId]);
-  useEffect(() => { if (accountId) saveUsers(accountId, users); }, [users, accountId]);
+  // Data per profile
+  const [users, setUsers] = useState(() => loadUsersForAccount(accountId));
+  useEffect(() => { setUsers(loadUsersForAccount(accountId)); }, [accountId]);
+  useEffect(() => { if (accountId) saveUsersForAccount(accountId, users); }, [users, accountId]);
 
+  // Selection inside profile
   const [selectedId, setSelectedId] = useState(() => users[0]?.id || null);
   useEffect(() => { setSelectedId(users[0]?.id || null); }, [users]);
 
   const selected = useMemo(() => users.find(u => u.id === selectedId) || null, [users, selectedId]);
 
+  // UI state
   const [showAccountPanel, setShowAccountPanel] = useState(false);
   const [toast, setToast] = useState(null);
-  const [busy, setBusy] = useState(false);
   const importRef = useRef(null);
+  const [busy, setBusy] = useState(false);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 3000); return () => clearTimeout(t); }, [toast]);
 
+  // Profile actions
   function createAccount() {
-    const label = window.prompt("Profilnamn (t.ex. Vide)") || "Profil";
-    const pin = window.prompt("Valfri PIN (lämna tomt)") || "";
+    const label = window.prompt("Profilnamn (t.ex. Johan, Ebba)") || "Profil";
+    const pin = window.prompt("Valfri PIN (lämna tomt för ingen PIN)") || "";
     const acc = { id: uid(), label, pin: pin.trim() ? pin.trim() : null, createdAt: new Date().toISOString() };
     const next = [...accounts, acc]; setAccounts(next); setAccountId(acc.id);
   }
   function deleteAccount(id) {
-    if (!window.confirm("Ta bort profilen?")) return;
+    if (!window.confirm("Ta bort profilen? Alla dess lokala data raderas.")) return;
     const next = accounts.filter(a => a.id !== id); setAccounts(next); if (accountId === id) setAccountId(next[0]?.id || null);
   }
   function switchAccount(a) {
@@ -120,64 +164,81 @@ export default function App() {
   }
   function signOut() { setAccountId(null); setShowAccountPanel(false); }
 
+  // Users actions
   function addUser() { if (!accountId) return; const u = NEW_USER(); u.name = `Athlete ${users.length + 1}`; const next = [...users, u]; setUsers(next); setSelectedId(u.id); }
   function updateSelected(patch) { setUsers(prev => prev.map(u => (u.id === selectedId ? { ...u, ...patch } : u))); }
   function removeUser(id) { const next = users.filter(u => u.id !== id); setUsers(next); if (selectedId === id) setSelectedId(next[0]?.id || null); }
-  function resetLogs() { if (!selected) return; if (!window.confirm("Rensa alla loggar?")) return; updateSelected({ logs: {} }); }
+  function resetLogs() { if (!selected) return; if (!window.confirm("Rensa alla loggar för denna användare?")) return; updateSelected({ logs: {} }); }
 
+  // Prescriptions per workout for current working RM
   const prescriptions = useMemo(() => {
     if (!selected) return {};
-    const out = {}; for (const w of WORKOUTS) out[w.id] = buildPrescription(w.id, selected.workingRmKg, selected.rounding); return out;
+    const out = {}; for (const w of WORKOUTS) out[w.id] = buildWorkoutPrescription(w.id, selected.workingRmKg, selected.rounding); return out;
   }, [selected]);
 
+  // Projected end-of-cycle 1RM (MM2K: base goal ≈ 115% of start + realized FT delta ± remaining)
   const projected = useMemo(() => {
     if (!selected) return null;
-    const FT = [5,7,9,11,13];
-    const base = roundToStep(selected.oneRmKg * 1.15, 0.5);
-    let delta = 0; let completed = 0;
-    for (const id of FT) {
+    const FT_IDS = [5,7,9,11,13];
+    const baseGoalKg = roundToStep(selected.oneRmKg * 1.15, 0.5);
+    let realizedDeltaKg = 0; let completed = 0;
+    for (const id of FT_IDS) {
       const log = selected.logs?.[id];
-      if (log?.done) { completed++; const r = Number(log.failureReps); if (Number.isFinite(r)) delta += (r >= 8 ? 2.5 : (r <= 3 ? -2.5 : 0)); }
+      if (log?.done) { completed++; const r = Number(log.failureReps); if (Number.isFinite(r)) realizedDeltaKg += (r >= 8 ? +2.5 : (r <= 3 ? -2.5 : 0)); }
     }
-    const remaining = FT.length - completed;
-    const point = roundToStep(base + delta, 0.5);
+    const remaining = FT_IDS.length - completed;
+    const point = roundToStep(baseGoalKg + realizedDeltaKg, 0.5);
     const min = roundToStep(point - 2.5 * remaining, 0.5);
     const max = roundToStep(point + 2.5 * remaining, 0.5);
-    return { min, max, point, delta, remaining };
+    return { min, max, point, delta: realizedDeltaKg, remaining };
   }, [selected]);
 
-  function ensureDefaultSets(log, rows, failureRepsVal) {
+  // Helpers: default logging
+  function ensureDefaultSetsForRows(log, rows, failureRepsVal) {
     return rows.map((r, idx) => {
-      const old = log?.sets?.[idx] || {};
-      const actualKg = Number.isFinite(old.actualKg) ? old.actualKg : r.targetKg;
+      const existing = log?.sets?.[idx] || {};
+      const actualKg = Number.isFinite(existing.actualKg) ? existing.actualKg : r.targetKg;
       let reps;
-      if (Number.isFinite(old.reps)) reps = old.reps; else if (typeof r.reps === "number") reps = r.reps; else if (r.kind === "failure") reps = Number.isFinite(failureRepsVal) ? Number(failureRepsVal) : 0; else reps = 0;
+      if (Number.isFinite(existing.reps)) reps = existing.reps;
+      else if (typeof r.reps === "number") reps = r.reps;
+      else if (r.kind === "failure") reps = Number.isFinite(failureRepsVal) ? Number(failureRepsVal) : 0;
+      else reps = 0;
       return { actualKg, reps };
     });
   }
-  function writeLog(workoutId, entry) { if (!selected) return; const prev = selected.logs?.[workoutId] || { sets: [], done: false }; updateSelected({ logs: { ...selected.logs, [workoutId]: { ...prev, ...entry } } }); }
-  function markDone(workoutId, done = true, opts = {}) {
+
+  // Logging and locking
+  function writeLog(workoutId, newEntry) {
+    if (!selected) return; const prev = selected.logs?.[workoutId] || { sets: [], done: false }; updateSelected({ logs: { ...selected.logs, [workoutId]: { ...prev, ...newEntry } } });
+  }
+
+  function markDone(workoutId, done = true, options = {}) {
     if (!selected) return; const prev = selected.logs?.[workoutId] || { sets: [], done: false };
     if (done && !prev.done) {
-      const rowsNow = opts.forceRows || buildPrescription(workoutId, selected.workingRmKg, selected.rounding);
-      const sets = ensureDefaultSets(prev, rowsNow, prev.failureReps);
-      writeLog(workoutId, { ...prev, sets, done: true, doneAt: new Date().toISOString(), lockedRmKg: selected.workingRmKg, lockedRounding: selected.rounding, lockedRows: rowsNow });
+      const rowsNow = options.forceRows || buildWorkoutPrescription(workoutId, selected.workingRmKg, selected.rounding);
+      const setsWithDefaults = ensureDefaultSetsForRows(prev, rowsNow, prev.failureReps);
+      writeLog(workoutId, { ...prev, sets: setsWithDefaults, done: true, doneAt: new Date().toISOString(), lockedRmKg: selected.workingRmKg, lockedRounding: selected.rounding, lockedRows: rowsNow });
     } else if (!done && prev.done) {
       const { lockedRmKg, lockedRounding, lockedRows, doneAt, ...rest } = prev; writeLog(workoutId, { ...rest, done: false });
     } else { writeLog(workoutId, { ...prev, done }); }
   }
+
+  // Confirm failure change: auto-complete workout and adjust RM, + toast for success
   function confirmFailure(workoutId) {
     if (!selected) return; const log = selected.logs?.[workoutId] || {};
     const rowsNow = (log?.done && Array.isArray(log.lockedRows) && log.lockedRows.length) ? log.lockedRows : (prescriptions[workoutId] || []);
-    const reps = Number(log.failureReps);
-    const newRm = applyFailureAdj(selected.workingRmKg, reps);
-    const sets = ensureDefaultSets(log, rowsNow, reps);
-    writeLog(workoutId, { ...log, sets, failureReps: reps });
+    const p2Weight = rowsNow[1]?.targetKg || 0; const reps = Number(log.failureReps);
+    const newRm = applyFailureAdjustment(selected.workingRmKg, p2Weight, reps);
+    const setsWithDefaults = ensureDefaultSetsForRows(log, rowsNow, reps);
+    writeLog(workoutId, { ...log, sets: setsWithDefaults, failureReps: reps });
+    // Lock snapshot based on pre-adjustment rows
     markDone(workoutId, true, { forceRows: rowsNow });
-    if (Number.isFinite(reps) && reps >= 8) setToast({ type: "up", msg: "Grattis! Failure Test klarat (+2.5 kg)" });
+    if (Number.isFinite(reps) && reps >= 8) setToast({ type: "up", msg: "Grattis! Du klarade Failure Test – +2.5 kg arbets-1RM" });
+    // Apply RM change after locking
     updateSelected({ workingRmKg: newRm });
   }
 
+  // Export/Import of current profile users
   function exportProfile() {
     if (!accountId) return; const payload = { account: accounts.find(a => a.id === accountId) || null, users };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -187,29 +248,43 @@ export default function App() {
     const reader = new FileReader(); reader.onload = () => { try { const data = JSON.parse(String(reader.result)); if (data && Array.isArray(data.users)) setUsers(data.users); else alert("Ogiltigt JSON-format"); } catch (e) { alert("Kunde inte läsa JSON: " + e.message); } }; reader.readAsText(file);
   }
 
+  // Remote save/load (Vercel Blob via serverless endpoints)
   async function saveRemoteProfile() {
-    if (!accountId) return; setBusy(true);
+    if (!accountId) return;
+    setBusy(true);
     try {
-      const r = await fetch('/api/profiles/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId, profile: { users } }) });
-      if (!r.ok) throw new Error('Save failed'); setToast({ type: 'up', msg: 'Sparat till server (Blob)'});
-    } catch (e) { alert('Kunde inte spara: ' + e.message); } finally { setBusy(false); }
+      const r = await fetch('/api/profiles/save', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId, profile: { users } })
+      });
+      if (!r.ok) throw new Error('Save failed');
+      setToast({ type: 'up', msg: 'Sparat till server (Blob) ✅' });
+    } catch (e) {
+      alert('Kunde inte spara: ' + e.message);
+    } finally { setBusy(false); }
   }
   async function loadRemoteProfile() {
-    if (!accountId) return; setBusy(true);
+    if (!accountId) return;
+    setBusy(true);
     try {
       const r = await fetch(`/api/profiles/${accountId}`);
-      if (!r.ok) throw new Error('Hittar ingen serverprofil'); const data = await r.json();
-      if (Array.isArray(data.users)) setUsers(data.users); else alert('Svar saknar users[]'); setToast({ type: 'up', msg: 'Laddat från server (Blob)'});
-    } catch (e) { alert('Kunde inte ladda: ' + e.message); } finally { setBusy(false); }
+      if (!r.ok) throw new Error('Hittar ingen serverprofil');
+      const data = await r.json();
+      if (Array.isArray(data.users)) setUsers(data.users); else alert('Svar saknar users[]');
+      setToast({ type: 'up', msg: 'Laddat från server (Blob) ✅' });
+    } catch (e) {
+      alert('Kunde inte ladda: ' + e.message);
+    } finally { setBusy(false); }
   }
 
+  // Login screen if no active account
   if (!accountId) {
     return (
       <div className="min-h-screen w-full bg-slate-50 text-slate-900 grid place-items-center p-6">
         <div className="w-full max-w-xl bg-white rounded-2xl shadow-lg border p-6">
           <div className="text-center mb-4">
             <div className="text-3xl md:text-4xl font-extrabold flex items-center justify-center gap-3"><LiftEmoji /><span>MM2K Bench</span></div>
-            <div className="text-slate-700">6 veckor, 14 pass, lokala profiler</div>
+            <div className="text-slate-700">6 veckor · 14 pass · Lokala profiler</div>
           </div>
           <div className="space-y-3">
             <button className={`${BTN_BASE} ${BTN_SOLID} w-full`} onClick={createAccount}>+ Ny profil</button>
@@ -232,35 +307,38 @@ export default function App() {
                 </ul>
               </div>
             )}
-            <div className="text-xs text-slate-500">Profiler sparas lokalt i webbläsaren.</div>
+            <div className="text-xs text-slate-500">Profiler sparas lokalt i din webbläsare.</div>
           </div>
         </div>
       </div>
     );
   }
 
-  const active = accounts.find(a => a.id === accountId);
+  const activeAccount = accounts.find(a => a.id === accountId);
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-900">
+      {/* Header */}
       <header className="sticky top-0 z-10 border-b border-slate-200">
         <div className="bg-gradient-to-r from-violet-900 via-indigo-900 to-sky-900 text-white">
           <div className="mx-auto max-w-6xl px-4 py-6 flex items-center justify-between">
             <div className="flex items-center gap-4">
               <LiftEmoji />
               <div>
-                <h1 className="text-2xl md:text-3xl font-black tracking-tight">MM2K Bench</h1>
-                <p className="text-sm md:text-base text-white/95">6 veckor, 14 pass, Kg-beräkningar, Failure-bekräftelse</p>
+                <h1 className="text-2xl md:text-3xl font-black tracking-tight drop-shadow-[0_1px_1px_rgba(0,0,0,.5)]">MM2K Bench</h1>
+                <p className="text-sm md:text-base text-white/95 drop-shadow-[0_1px_1px_rgba(0,0,0,.6)]">6 veckor · 14 pass · Kg-beräkningar · Failure-bekräftelse</p>
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
               <button onClick={exportProfile} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Exportera</button>
               <button onClick={() => importRef.current?.click()} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Importera</button>
               <input ref={importRef} type="file" accept="application/json" className="hidden" onChange={e => e.target.files && importProfile(e.target.files[0])} />
+
               <button disabled={busy} onClick={saveRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Sparar...' : 'Spara till server'}</button>
               <button disabled={busy} onClick={loadRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Laddar...' : 'Ladda från server'}</button>
+
               <div className="relative">
-                <button onClick={() => setShowAccountPanel(v => !v)} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Profil: {active?.label || 'Okänd'}</button>
+                <button onClick={() => setShowAccountPanel(v => !v)} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Profil: {activeAccount?.label || 'Okänd'}</button>
                 {showAccountPanel && (
                   <div className="absolute right-0 mt-2 w-72 bg-white text-slate-900 rounded-xl shadow-lg border p-2">
                     <div className="px-2 py-1 text-xs text-slate-500">Profiler</div>
@@ -288,6 +366,7 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 grid md:grid-cols-[260px,1fr] gap-6">
+        {/* Sidebar - Users */}
         <aside className="bg-white rounded-2xl shadow-sm border p-3 h-fit">
           <h2 className="text-lg font-semibold mb-2">Användare i profilen</h2>
           <ul className="space-y-1">
@@ -306,6 +385,7 @@ export default function App() {
           </div>
         </aside>
 
+        {/* Content */}
         <section className="space-y-6">
           {!selected ? (
             <div className="bg-white rounded-2xl shadow-sm border p-6 text-center">
@@ -313,24 +393,65 @@ export default function App() {
             </div>
           ) : (
             <>
+              {/* Settings card */}
               <div className="bg-white rounded-2xl shadow-sm border p-6">
                 <h2 className="text-lg font-semibold mb-4">Profil och inställningar</h2>
                 <div className="grid md:grid-cols-2 gap-4">
-                  <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Namn</span><input className="rounded-xl border px-3 py-2" value={selected.name} onChange={e=>updateSelected({name:e.target.value})} /></label>
-                  <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Startdatum</span><input type="date" className="rounded-xl border px-3 py-2" value={selected.startDate} onChange={e=>updateSelected({startDate:e.target.value})} /></label>
-                  <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">1RM (kg)</span><input type="number" className="rounded-xl border px-3 py-2" value={selected.oneRmKg} onChange={e=>{ const v = Number(e.target.value || 0); updateSelected({ oneRmKg: v, workingRmKg: v }); }} /></label>
-                  <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Arbets-1RM (kg)</span><div className="flex gap-2"><input type="number" className="rounded-xl border px-3 py-2 grow" value={selected.workingRmKg} onChange={e=>updateSelected({ workingRmKg: Number(e.target.value || 0) })} /><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>updateSelected({ workingRmKg: selected.oneRmKg })}>Reset</button></div></label>
-                  <label className="flex flex-col gap-1"><span className="text-sm text-slate-600">Avrundning (kg-steg)</span><select className="rounded-xl border px-3 py-2" value={selected.rounding} onChange={e=>updateSelected({ rounding: Number(e.target.value) })}>{[1,1.25,2,2.5,5].map(s=> <option key={s} value={s}>{s}</option>)}</select></label>
-                  <div className="md:col-span-2"><div className="rounded-xl border p-3 bg-slate-50 text-sm">{projected ? (<><div className="font-medium">Prognos 1RM efter #14:</div><div>Bas (115% av start): <span className="font-medium">{roundToStep(selected.oneRmKg * 1.15, 0.5)} kg</span></div><div>Uppnått via Failure-test: <span className="font-medium">{projected.delta >= 0 ? '+' : ''}{projected.delta} kg</span></div><div className="mt-1">Intervall: <span className="font-semibold">{projected.min} – {projected.max} kg</span> (återstår {projected.remaining} FT)</div></>) : (<div>Ingen prognos tillgänglig.</div>)}</div></div>
-                  <label className="flex flex-col gap-1 md:col-span-2"><span className="text-sm text-slate-600">Anteckningar</span><textarea rows={2} className="rounded-xl border px-3 py-2" value={selected.notes||""} onChange={e=>updateSelected({notes:e.target.value})}/></label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Namn</span>
+                    <input className="rounded-xl border px-3 py-2" value={selected.name} onChange={e=>updateSelected({name:e.target.value})} />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Startdatum</span>
+                    <input type="date" className="rounded-xl border px-3 py-2" value={selected.startDate} onChange={e=>updateSelected({startDate:e.target.value})} />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">1RM (kg)</span>
+                    <input type="number" className="rounded-xl border px-3 py-2" value={selected.oneRmKg} onChange={e=>{ const v = Number(e.target.value || 0); updateSelected({ oneRmKg: v, workingRmKg: v }); }} />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Arbets-1RM (kg) · beräkning</span>
+                    <div className="flex gap-2">
+                      <input type="number" className="rounded-xl border px-3 py-2 grow" value={selected.workingRmKg} onChange={e=>updateSelected({ workingRmKg: Number(e.target.value || 0) })} />
+                      <button className={`${BTN_BASE} ${BTN_SUBTLE}`} title="Återställ till 1RM" onClick={()=>updateSelected({ workingRmKg: selected.oneRmKg })}>Reset</button>
+                    </div>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm text-slate-600">Avrundning (kg-steg)</span>
+                    <select className="rounded-xl border px-3 py-2" value={selected.rounding} onChange={e=>updateSelected({ rounding: Number(e.target.value) })}>
+                      {[1,1.25,2,2.5,5].map(s=> <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </label>
+                  <div className="md:col-span-2">
+                    <div className="rounded-xl border p-3 bg-slate-50 text-sm">
+                      {projected ? (
+                        <>
+                          <div className="font-medium">Prognos 1RM efter #14:</div>
+                          <div>Bas (≈115% av start): <span className="font-medium">{roundToStep(selected.oneRmKg * 1.15, 0.5)} kg</span></div>
+                          <div>Uppnått via Failure-test hittills: <span className="font-medium">{projected.delta >= 0 ? '+' : ''}{projected.delta} kg</span></div>
+                          <div className="mt-1">Prognosintervall: <span className="font-semibold">{projected.min} – {projected.max} kg</span> (återstår {projected.remaining} FT · ±2.5 kg/test)</div>
+                        </>
+                      ) : (
+                        <div>Ingen prognos tillgänglig.</div>
+                      )}
+                    </div>
+                  </div>
+                  <label className="flex flex-col gap-1 md:col-span-2">
+                    <span className="text-sm text-slate-600">Anteckningar</span>
+                    <textarea rows={2} className="rounded-xl border px-3 py-2" value={selected.notes||""} onChange={e=>updateSelected({notes:e.target.value})}/>
+                  </label>
                 </div>
-                <div className="mt-4 flex items-center gap-3"><button onClick={resetLogs} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Rensa loggar</button></div>
+                <div className="mt-4 flex items-center gap-3">
+                  <button onClick={resetLogs} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Rensa loggar</button>
+                </div>
               </div>
 
+              {/* Plan */}
               <div className="grid md:grid-cols-2 gap-6">
                 {WORKOUTS.map(w => {
                   const log = selected.logs?.[w.id] || { sets: [], done: false, failureReps: undefined };
                   const rows = (log.done && Array.isArray(log.lockedRows) && log.lockedRows.length) ? log.lockedRows : (prescriptions[w.id] || []);
+
                   const reps = log.failureReps;
                   const suggestion = (typeof reps === "number" && !Number.isNaN(reps)) ? (reps >= 8 ? "increase" : (reps <= 3 ? "decrease" : "hold")) : null;
                   const proposedUp = roundToStep(selected.workingRmKg + 2.5, 0.5);
@@ -350,7 +471,12 @@ export default function App() {
 
                       <table className="w-full text-sm border-separate" style={{borderSpacing:"0 6px"}}>
                         <thead>
-                          <tr className="text-left text-slate-500"><th className="font-medium">Set</th><th className="font-medium">Reps</th><th className="font-medium">Rek. vikt</th><th className="font-medium">Logg</th></tr>
+                          <tr className="text-left text-slate-500">
+                            <th className="font-medium">Set</th>
+                            <th className="font-medium">Reps</th>
+                            <th className="font-medium">Rek. vikt</th>
+                            <th className="font-medium">Logg</th>
+                          </tr>
                         </thead>
                         <tbody>
                           {rows.map((r, idx) => (
@@ -360,8 +486,10 @@ export default function App() {
                               <td className="py-1 pr-2">{r.targetKg} kg</td>
                               <td className="py-1">
                                 <div className="flex gap-2">
-                                  <input type="number" placeholder="kg" className="w-24 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.actualKg ?? ''} onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), actualKg: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
-                                  <input type="number" placeholder="reps" className="w-20 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.reps ?? ''} onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), reps: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
+                                  <input type="number" placeholder="kg" className="w-24 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.actualKg ?? ''}
+                                    onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), actualKg: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
+                                  <input type="number" placeholder="reps" className="w-20 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.reps ?? ''}
+                                    onChange={e=>{ const sets = [...(log.sets||[])]; sets[idx] = { ...(sets[idx]||{}), reps: Number(e.target.value||0) }; writeLog(w.id, { ...log, sets }); }} />
                                 </div>
                               </td>
                             </tr>
@@ -372,32 +500,50 @@ export default function App() {
                       {rows.some(r=>r.kind === "failure") && (
                         <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 p-3">
                           <div className="text-sm mb-2 font-medium">Failure Test</div>
-                          <p className="text-sm text-slate-600 mb-2">Max reps med block 2-vikten ({rows[1]?.targetKg} kg). 4-7 reps ingen andring. 3 eller mindre -2.5 kg. 8 eller fler +2.5 kg.</p>
-                          <div className="flex items-center gap-2 mb-2"><input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ''} onChange={e=>writeLog(w.id, { ...log, failureReps: Number(e.target.value||0) })} /></div>
+                          <p className="text-sm text-slate-600 mb-2">Max reps med block #2-vikten ({rows[1]?.targetKg} kg). 4–7 reps: ingen ändring. ≤3: −2.5 kg. ≥8: +2.5 kg.</p>
+                          <div className="flex items-center gap-2 mb-2">
+                            <input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ''} onChange={e=>writeLog(w.id, { ...log, failureReps: Number(e.target.value||0) })} />
+                          </div>
                           {suggestion === 'increase' && (
-                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Föreslagen ändring:</span><span className="font-medium">+2.5 kg</span><span>({selected.workingRmKg} → {proposedUp} kg)</span><button className={`${BTN_BASE} ${BTN_GOOD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
+                            <div className="flex flex-wrap items-center gap-2 text-sm">
+                              <span>Föreslagen ändring:</span>
+                              <span className="font-medium">+2.5 kg</span>
+                              <span>({selected.workingRmKg} → {proposedUp} kg)</span>
+                              <button className={`${BTN_BASE} ${BTN_GOOD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button>
+                              <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button>
+                            </div>
                           )}
                           {suggestion === 'decrease' && (
-                            <div className="flex flex-wrap items-center gap-2 text-sm"><span>Föreslagen ändring:</span><span className="font-medium">-2.5 kg</span><span>({selected.workingRmKg} → {proposedDown} kg)</span><button className={`${BTN_BASE} ${BTN_BAD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button><button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button></div>
+                            <div className="flex flex-wrap items-center gap-2 text-sm">
+                              <span>Föreslagen ändring:</span>
+                              <span className="font-medium">-2.5 kg</span>
+                              <span>({selected.workingRmKg} → {proposedDown} kg)</span>
+                              <button className={`${BTN_BASE} ${BTN_BAD}`} onClick={()=>confirmFailure(w.id)}>Bekräfta</button>
+                              <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>writeLog(w.id, { ...log, failureReps: undefined })}>Avbryt</button>
+                            </div>
                           )}
-                          {suggestion === 'hold' && (<div className="text-xs text-slate-600">Ingen andring foreslas for {reps} reps.</div>)}
+                          {suggestion === 'hold' && (<div className="text-xs text-slate-600">Ingen ändring föreslås för {reps} reps.</div>)}
                         </div>
                       )}
 
-                      {rows.some(r=>r.kind === "negative") && (<div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1x1 (~{Math.round(getPercentsForWorkout(w.id)[2]*100)}% av 1RM). Spotta sakert.</div>)}
-                      {rows.some(r=>r.kind === "max") && (<div className="mt-3 text-xs text-slate-600">Max-test: forsok nytt 1RM.</div>)}
+                      {rows.some(r=>r.kind === "negative") && (
+                        <div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1×1 (~{Math.round(getPercentsForWorkout(w.id)[2]*100)}% av 1RM). Spotta säkert.</div>
+                      )}
+                      {rows.some(r=>r.kind === "max") && (
+                        <div className="mt-3 text-xs text-slate-600">Max-test: försök nytt 1RM. Värm upp smart, ha spotter.</div>
+                      )}
                     </article>
                   );
                 })}
               </div>
 
               <div className="rounded-2xl border shadow-sm bg-white p-4 text-sm text-slate-600">
-                <h3 className="font-semibold mb-2">Tips och upplägg</h3>
+                <h3 className="font-semibold mb-2">Tips och upplägg (kort)</h3>
                 <ul className="list-disc pl-5 space-y-1">
-                  <li>Två bänkpass per vecka, 14 totalt.</li>
-                  <li>FT-dagar styr arbets-1RM med plus minus 2.5 kg.</li>
-                  <li>Negativ-dagar ligger över 110 procent av 1RM.</li>
-                  <li>Sista passet siktar kring 115 procent av start-1RM.</li>
+                  <li>Två bänkpass per vecka (14 totalt).</li>
+                  <li>FT-dagar styr arbets-1RM (±2.5 kg). Negativ-dagar är >110% av 1RM.</li>
+                  <li>Vikter beräknas från ditt arbets-1RM i kg och avrundas till närmaste {selected.rounding} kg.</li>
+                  <li>Sista passet (#14) siktar kring 115% av start-1RM, sedan bygger FT-utfall vidare.</li>
                 </ul>
               </div>
             </>
@@ -405,6 +551,7 @@ export default function App() {
         </section>
       </main>
 
+      {/* Toast */}
       {toast && (
         <div className="fixed bottom-4 right-4 z-50">
           <div className="rounded-xl border bg-white text-slate-900 px-4 py-3 shadow-lg min-w-[260px] flex items-start gap-2">
@@ -418,7 +565,7 @@ export default function App() {
       )}
 
       <footer className="mx-auto max-w-6xl px-4 pb-10 text-xs text-slate-500">
-        <div className="mt-6">Procentkurvan tunad for att pass 14 ligger runt 115 procent av start-1RM. Serverlagring via Vercel Blob.</div>
+        <div className="mt-6">Byggt för att efterlikna MM2K-upplägget. Procentkurvan är tunad så #14 ≈ 115% av start-1RM. FT-utfall lägger på ±2.5 kg per test. Serverlagring via Vercel Blob (privat) kräver /api/profiles-routes.</div>
       </footer>
     </div>
   );
