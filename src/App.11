@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // MM2K Bench – 6 veckor / 14 pass
-// Nytt i den här versionen:
-// • Historik/Återställning (lista snapshots via /api/profiles/history och återställ lokalt)
-// • "Koppla enhet" (delningslänk ?k=<blobKey>) – ladda profil på mobil/dator
-// • Synk nu (pull/merge/push med profileMeta.rev)
-// • FT-bekräftelse EN gång + auto-Klart; "Ångra FT" återkallar bekräftelsen och räknar om arbets‑1RM
-// • Inga manuella ändringar när passet är Klart (inputs & FT-knapp är låsta)
-// • Profilskapande-exempel ändrat till Vide
+// Funktioner i den här versionen:
+// • Lokala profiler (accounts) med PIN (valfritt) + ogenomskinligt blobKey per profil
+// • Spara/Ladda via Vercel Blob API-routes (/api/profiles/save, /api/profiles/[id])
+// • Historik sköts i servern (save.js skriver även profiles/<key>/history/*.json)
+// • "Synk nu" med enkel versionshantering (profileMeta.rev) och merge (nyast logg per pass vinner)
+// • FT (Failure test) kan endast bekräftas EN gång per pass (ftApplied=true)
+// • När ett pass är markerat Klart låses alla inputs och FT-knappen
+// • Prognos i profilen baserat på 115% + bekräftade FT-deltas
 
 /****************
  * Local storage
@@ -193,9 +194,6 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [busy, setBusy] = useState(false);
   const [linkPanel, setLinkPanel] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyItems, setHistoryItems] = useState([]);
-  const [historyBusy, setHistoryBusy] = useState(false);
   const importRef = useRef(null);
   useEffect(() => { if (!toast) return; const t = setTimeout(()=>setToast(null), 3000); return ()=>clearTimeout(t); }, [toast]);
 
@@ -241,7 +239,7 @@ export default function App() {
 
   // Account actions
   function createAccount() {
-    const label = window.prompt("Profilnamn (t.ex. Vide)") || "Profil"; // ← ändrat exempel
+    const label = window.prompt("Profilnamn (t.ex. Johan, Ebba)") || "Profil";
     const pin = window.prompt("Valfri PIN (lämna tomt)") || "";
     const acc = { id: uid(), label, pin: pin.trim()?pin.trim():null, blobKey: generateOpaqueKey(), createdAt: new Date().toISOString() };
     const next = [...accounts, acc]; setAccounts(next); setAccountId(acc.id);
@@ -257,12 +255,20 @@ export default function App() {
   function signOut() { setAccountId(null); setShowAccountPanel(false); }
 
   // User actions
-  function addUser() { if (!accountId) return; const u = NEW_USER(); u.name = `Athlete ${users.length + 1}`; setUsers(prev => [...prev, u]); setSelectedId(u.id); }
-  function updateSelected(patch) { setUsers(prev => prev.map(u => (u.id === selectedId ? { ...u, ...patch } : u))); }
-  function removeUser(id) { const next = users.filter(u => u.id !== id); setUsers(next); if (selectedId === id) setSelectedId(next[0]?.id || null); }
-  function resetLogs() { if (!selected) return; if (!window.confirm("Rensa alla loggar?")) return; updateSelected({ logs: {} }); }
+  function addUser() {
+    if (!accountId) return; const u = NEW_USER(); u.name = `Athlete ${users.length + 1}`; setUsers(prev => [...prev, u]); setSelectedId(u.id);
+  }
+  function updateSelected(patch) {
+    setUsers(prev => prev.map(u => (u.id === selectedId ? { ...u, ...patch } : u)));
+  }
+  function removeUser(id) {
+    const next = users.filter(u => u.id !== id); setUsers(next); if (selectedId === id) setSelectedId(next[0]?.id || null);
+  }
+  function resetLogs() {
+    if (!selected) return; if (!window.confirm("Rensa alla loggar?")) return; updateSelected({ logs: {} });
+  }
 
-  // Hjälpare för logg/FT
+  // Logs helpers
   function ensureDefaultSets(log, rows, failureRepsVal) {
     return rows.map((r, idx) => {
       const old = log?.sets?.[idx] || {};
@@ -283,6 +289,7 @@ export default function App() {
       const sets = ensureDefaultSets(prev, rowsNow, prev.failureReps);
       writeLog(workoutId, { ...prev, sets, done: true, doneAt: new Date().toISOString(), lockedRmKg: selected.workingRmKg, lockedRounding: selected.rounding, lockedRows: rowsNow });
     } else if (!done && prev.done) {
+      // Låsa upp igen (FT är ändå en engångsändring via ftApplied-flagga)
       const { lockedRmKg, lockedRounding, lockedRows, doneAt, ...rest } = prev; writeLog(workoutId, { ...rest, done: false });
     } else { writeLog(workoutId, { ...prev, done }); }
   }
@@ -293,34 +300,17 @@ export default function App() {
     const reps = Number(log.failureReps);
     const ftDelta = calcFtDelta(reps);
     const sets = ensureDefaultSets(log, rowsNow, reps);
+    // Skriv logg och lås passet
     writeLog(workoutId, { ...log, sets, failureReps: reps });
-    markDone(workoutId, true, { forceRows: rowsNow }); // auto-Klart
-    writeLog(workoutId, { ...log, sets, failureReps: reps, ftApplied: true, ftDelta }); // lås FT
+    markDone(workoutId, true, { forceRows: rowsNow });
+    // Applicera exakt en gång
+    writeLog(workoutId, { ...log, sets, failureReps: reps, ftApplied: true, ftDelta });
     if (ftDelta !== 0) updateSelected({ workingRmKg: roundTo(selected.workingRmKg + ftDelta, 0.5) });
     if (ftDelta > 0) setToast({ type: 'up', msg: 'Grattis! Failure Test klarat (+2.5 kg)' });
     if (ftDelta < 0) setToast({ type: 'note', msg: 'Vikten har sänkts (-2.5 kg) enligt Failure Test.' });
   }
-  function recomputeWorkingRm(excludeId = null) {
-    if (!selected) return;
-    const FT_IDS = [5,7,9,11,13];
-    let w = Number(selected.oneRmKg) || 0;
-    for (const id of FT_IDS) {
-      if (id === excludeId) continue;
-      const lg = selected.logs?.[id];
-      if (lg?.ftApplied && Number.isFinite(lg.ftDelta)) w += Number(lg.ftDelta);
-    }
-    return roundTo(w, 0.5);
-  }
-  function undoFailure(workoutId) {
-    if (!selected) return; const log = selected.logs?.[workoutId];
-    if (!log?.ftApplied) { setToast({ type: 'note', msg: 'Ingen FT att ångra för detta pass.' }); return; }
-    const newWork = recomputeWorkingRm(workoutId);
-    writeLog(workoutId, { ...log, ftApplied: false, ftDelta: undefined });
-    updateSelected({ workingRmKg: newWork });
-    setToast({ type: 'note', msg: 'FT återkallad. Arbets‑1RM har räknats om.' });
-  }
 
-  // Export/Import
+  // Export/Import (lokal JSON)
   function exportProfile() {
     if (!accountId) return; const payload = { users, profileMeta: meta };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -361,26 +351,33 @@ export default function App() {
     } catch (e) { alert('Kunde inte ladda: ' + e.message); } finally { setBusy(false); }
   }
 
-  // Historik (lista och återställ)
-  async function openHistory() {
-    if (!accountId) return; const acc = accounts.find(a => a.id === accountId); const blobKey = acc?.blobKey || acc?.id;
-    setHistoryOpen(true); setHistoryBusy(true);
+  // Synk nu – pull, jämför, ev merge eller push
+  async function syncNow() {
+    if (!accountId) return; const acc = accounts.find(a => a.id === accountId); const blobKey = acc?.blobKey || acc?.id; setBusy(true);
     try {
-      const r = await fetch(`/api/profiles/history?key=${blobKey}`);
-      if (!r.ok) throw new Error('Kunde inte lista historik');
-      const data = await r.json();
-      setHistoryItems(Array.isArray(data.items) ? data.items : []);
-    } catch (e) { alert(e.message); } finally { setHistoryBusy(false); }
-  }
-  async function restoreSnapshot(item) {
-    try {
-      const r = await fetch(item.url);
-      if (!r.ok) throw new Error('Kunde inte hämta snapshot');
-      const data = await r.json();
-      if (Array.isArray(data.users)) setUsers(data.users);
-      if (data.profileMeta) setMeta(data.profileMeta);
-      setToast({ type:'up', msg:'Återställde snapshot lokalt. Glöm inte spara till server om du vill skriva över.' });
-    } catch (e) { alert(e.message); }
+      const r = await fetch(`/api/profiles/${blobKey}`);
+      if (!r.ok) { setToast({ type:'note', msg:'Ingen serverprofil funnen – sparar upp din lokala.' }); await saveRemoteProfile(); return; }
+      const remote = await r.json();
+      const rMeta = remote.profileMeta || { rev:0 };
+      const lRev = meta?.rev || 0;
+      const rRev = rMeta.rev || 0;
+      if (rRev > lRev) {
+        // Remote nyare – merge
+        const merged = mergeProfiles(users, remote.users || []);
+        setUsers(merged);
+        setMeta(rMeta);
+        setToast({ type:'up', msg:`Synk: Hämtade serverversion (rev ${rRev}) och slog ihop.` });
+      } else if (lRev > rRev) {
+        // Lokal nyare – fråga om push
+        if (window.confirm(`Servern (rev ${rRev}) är äldre än din lokala (rev ${lRev}). Skicka upp lokala nu?`)) {
+          await saveRemoteProfile();
+        } else {
+          setToast({ type:'note', msg:'Synk avbruten (lokal version behålls).'});
+        }
+      } else {
+        setToast({ type:'up', msg:'Synk: Redan i fas (samma rev).'});
+      }
+    } catch (e) { alert('Synk fel: ' + e.message); } finally { setBusy(false); }
   }
 
   // Delningslänk
@@ -388,7 +385,7 @@ export default function App() {
   const shareLink = activeAcc ? `${location.origin}${location.pathname}?k=${activeAcc.blobKey}` : '';
   function copyShareLink() { navigator.clipboard?.writeText(shareLink); setToast({ type:'up', msg:'Delningslänk kopierad!' }); }
 
-  // Render: login-läge
+  // Render: login-läge (innan konto valt)
   if (!accountId) {
     return (
       <div className="min-h-screen w-full bg-slate-50 text-slate-900 grid place-items-center p-6">
@@ -445,7 +442,6 @@ export default function App() {
               <button disabled={busy} onClick={syncNow} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Synkar…' : 'Synk nu'}</button>
               <button disabled={busy} onClick={saveRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Sparar…' : 'Spara till server'}</button>
               <button disabled={busy} onClick={loadRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Laddar…' : 'Ladda från server'}</button>
-              <button onClick={openHistory} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Historik</button>
               <div className="relative">
                 <button onClick={() => setShowAccountPanel(v => !v)} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Profil: {activeAcc?.label || 'Okänd'}</button>
                 {showAccountPanel && (
@@ -634,10 +630,7 @@ export default function App() {
                             </div>
                           )}
                           {(isLocked || log.ftApplied) && (
-                            <div className="flex items-center justify-between text-xs text-slate-600">
-                              <span>Detta pass är låst – inga ändringar tillåtna.</span>
-                              {log.ftApplied && <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>undoFailure(w.id)}>Ångra FT</button>}
-                            </div>
+                            <div className="text-xs text-slate-600">Detta pass är låst – inga ändringar tillåtna.</div>
                           )}
                         </div>
                       )}
@@ -666,37 +659,6 @@ export default function App() {
           )}
         </section>
       </main>
-
-      {historyOpen && (
-        <div className="fixed inset-0 z-40 bg-black/20" onClick={()=>setHistoryOpen(false)}>
-          <div className="absolute right-4 top-16 w-[min(90vw,520px)] bg-white border shadow-xl rounded-2xl p-4" onClick={e=>e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="font-semibold">Snapshots (server)</h3>
-              <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>setHistoryOpen(false)}>Stäng</button>
-            </div>
-            {historyBusy ? (
-              <div className="text-sm text-slate-600">Hämtar…</div>
-            ) : (
-              <div className="max-h-[60vh] overflow-auto divide-y">
-                {historyItems.length === 0 ? (
-                  <div className="text-sm text-slate-500">Ingen historik hittad.</div>
-                ) : historyItems.map((it) => (
-                  <div key={it.pathname} className="py-2 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="font-medium truncate">{it.pathname.split('/').pop()}</div>
-                      <div className="text-xs text-slate-500">{it.uploadedAt ? new Date(it.uploadedAt).toLocaleString() : '—'} · {it.size ? `${(it.size/1024).toFixed(1)} kB` : ''}</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <a href={it.url} target="_blank" rel="noreferrer" className={`${BTN_BASE} ${BTN_SUBTLE}`}>Visa</a>
-                      <button className={`${BTN_BASE} ${BTN_GOOD}`} onClick={()=>restoreSnapshot(it)}>Återställ lokalt</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {toast && (
         <div className="fixed bottom-4 right-4 z-50">
