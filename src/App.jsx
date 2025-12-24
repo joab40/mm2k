@@ -197,24 +197,36 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyBusy, setHistoryBusy] = useState(false);
-  const importRef = useRef(null);
-  useEffect(() => { if (!toast) return; const t = setTimeout(()=>setToast(null), 3000); return ()=>clearTimeout(t); }, [toast]);
+    useEffect(() => { if (!toast) return; const t = setTimeout(()=>setToast(null), 3000); return ()=>clearTimeout(t); }, [toast]);
 
   // ▼ Nytt: plocka ut blobKey ur manuell kod/länk
   function extractBlobKeyFromInput(input) {
-    let s = String(input || '').trim();
-    if (!s) return null;
-    // Försök som URL med ?k=
+    const raw = String(input || '').trim();
+    if (!raw) return null;
+
+    // 1) Direkt nyckel
+    if (/^[A-Za-z0-9_-]{12,}$/.test(raw)) return raw;
+
+    // 2) URL med ?k=<KEY>
     try {
-      const u = new URL(s);
+      const u = new URL(raw);
       const k = u.searchParams.get('k');
-      if (k) return k;
+      if (k && /^[A-Za-z0-9_-]{12,}$/.test(k)) return k;
+      // 3) Blob-path: /profiles/<KEY>/profile.json
+      const m = u.pathname.match(/\/profiles\/([A-Za-z0-9_-]{12,})\//);
+      if (m && m[1]) return m[1];
     } catch {}
-    // Rensa ev. prefix/suffix
-    s = s.replace(/^profiles\//, '').replace(/\.json$/, '');
+
+    // 4) Plain path: profiles/<KEY>/profile.json
+    const m2 = raw.match(/profiles\/([A-Za-z0-9_-]{12,})\//);
+    if (m2 && m2[1]) return m2[1];
+
+    // 5) Fallback – sista token (utan .json)
+    const s = raw.replace(/\.json($|\?.*)/, '');
     const parts = s.split(/[?#/]/).filter(Boolean);
-    const candidate = parts.length ? parts[parts.length-1] : s;
+    const candidate = parts[parts.length - 1] || '';
     if (/^[A-Za-z0-9_-]{12,}$/.test(candidate)) return candidate;
+
     return null;
   }
 
@@ -502,7 +514,6 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
-               e.target.files && importProfile(e.target.files[0])} />
               <button disabled={busy} onClick={syncNow} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Synkar…' : 'Synk nu'}</button>
               <button disabled={busy} onClick={saveRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Sparar…' : 'Spara till server'}</button>
               <button disabled={busy} onClick={loadRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Laddar…' : 'Ladda från server'}</button>
@@ -793,4 +804,37 @@ export default function App() {
     </div>
   );
 }
+  // Synk: hämta, jämför rev, merge, ev. push
+  async function syncNow() {
+    if (!accountId) return;
+    const acc = accounts.find(a => a.id === accountId);
+    const blobKey = acc?.blobKey || acc?.id;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/profiles/${blobKey}`);
+      if (r.ok) {
+        const remote = await r.json();
+        const remoteUsers = Array.isArray(remote.users) ? remote.users : [];
+        const remoteMeta = remote.profileMeta || { rev: 0 };
+        const localRev = meta?.rev || 0;
+        const remoteRev = remoteMeta.rev || 0;
+        if (remoteRev > localRev) {
+          const merged = mergeProfiles(users, remoteUsers);
+          setUsers(merged);
+          setMeta(remoteMeta);
+          setToast({ type: 'up', msg: 'Synk: hämtade och slog ihop ändringar.' });
+        } else if (remoteRev < localRev) {
+          await saveRemoteProfile();
+        } else {
+          setToast({ type: 'note', msg: 'Synk: inget att göra.' });
+        }
+      } else {
+        await saveRemoteProfile();
+      }
+    } catch (e) {
+      alert('Synk misslyckades: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
