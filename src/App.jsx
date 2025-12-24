@@ -193,11 +193,30 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [busy, setBusy] = useState(false);
   const [linkPanel, setLinkPanel] = useState(false);
+  const [linkCode, setLinkCode] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const importRef = useRef(null);
   useEffect(() => { if (!toast) return; const t = setTimeout(()=>setToast(null), 3000); return ()=>clearTimeout(t); }, [toast]);
+
+  // ▼ Nytt: plocka ut blobKey ur manuell kod/länk
+  function extractBlobKeyFromInput(input) {
+    let s = String(input || '').trim();
+    if (!s) return null;
+    // Försök som URL med ?k=
+    try {
+      const u = new URL(s);
+      const k = u.searchParams.get('k');
+      if (k) return k;
+    } catch {}
+    // Rensa ev. prefix/suffix
+    s = s.replace(/^profiles\//, '').replace(/\.json$/, '');
+    const parts = s.split(/[?#/]/).filter(Boolean);
+    const candidate = parts.length ? parts[parts.length-1] : s;
+    if (/^[A-Za-z0-9_-]{12,}$/.test(candidate)) return candidate;
+    return null;
+  }
 
   // Fånga ?k=<blobKey> för enkel "koppla enhet"
   useEffect(() => {
@@ -240,11 +259,32 @@ export default function App() {
   }, [selected]);
 
   // Account actions
-  function createAccount() {
-    const label = window.prompt("Profilnamn (t.ex. Vide)") || "Profil"; // ← ändrat exempel
+  async function createAccount() {
+    const label = window.prompt("Profilnamn (t.ex. Vide)") || "Profil"; // ändrat exempel
+    // Ny fråga: Har du delningskod/länk? (valfritt)
+    const maybeCode = window.prompt("Har du en delningskod eller länk (valfritt)? Klistra in här eller lämna tomt.") || "";
+    let blobKey = null;
+    if (maybeCode.trim()) {
+      blobKey = extractBlobKeyFromInput(maybeCode);
+      if (!blobKey) { alert('Koden/länken kunde inte tolkas. Du kan koppla senare via "Anslut med kod".'); }
+    }
     const pin = window.prompt("Valfri PIN (lämna tomt)") || "";
-    const acc = { id: uid(), label, pin: pin.trim()?pin.trim():null, blobKey: generateOpaqueKey(), createdAt: new Date().toISOString() };
+    const acc = { id: uid(), label, pin: pin.trim()?pin.trim():null, blobKey: blobKey || generateOpaqueKey(), createdAt: new Date().toISOString() };
     const next = [...accounts, acc]; setAccounts(next); setAccountId(acc.id);
+    // Om vi fick en blobKey: försök ladda serverprofil direkt
+    if (blobKey) {
+      try {
+        const r = await fetch(`/api/profiles/${blobKey}`);
+        if (r.ok) {
+          const data = await r.json();
+          if (Array.isArray(data.users)) setUsers(data.users);
+          if (data.profileMeta) setMeta(data.profileMeta);
+          setToast({ type:'up', msg:'Profil kopplad och laddad från server.' });
+        } else {
+          setToast({ type:'note', msg:'Kopplad kod hittades, men ingen serverprofil fanns ännu.' });
+        }
+      } catch {}
+    }
   }
   function deleteAccount(id) {
     if (!window.confirm("Ta bort profilen?")) return;
@@ -255,6 +295,28 @@ export default function App() {
     setAccountId(a.id); setShowAccountPanel(false);
   }
   function signOut() { setAccountId(null); setShowAccountPanel(false); }
+
+  // Snabb anslutning med kod från inloggsskärmen
+  async function connectWithCodeFlow(prefilled) {
+    const input = typeof prefilled === 'string' ? prefilled : window.prompt('Klistra in delningskod eller länk (med ?k=)');
+    if (!input) return;
+    const key = extractBlobKeyFromInput(input);
+    if (!key) { alert('Koden/länken kunde inte tolkas. Försök igen.'); return; }
+    const label = 'Delad profil';
+    const acc = { id: uid(), label, pin: null, blobKey: key, createdAt: new Date().toISOString() };
+    const next = [...accounts, acc]; setAccounts(next); setAccountId(acc.id);
+    try {
+      const r = await fetch(`/api/profiles/${key}`);
+      if (r.ok) {
+        const data = await r.json();
+        if (Array.isArray(data.users)) setUsers(data.users);
+        if (data.profileMeta) setMeta(data.profileMeta);
+        setToast({ type:'up', msg:'Profil kopplad och laddad från server.' });
+      } else {
+        setToast({ type:'note', msg:'Koden är kopplad, men ingen serverprofil fanns ännu.' });
+      }
+    } catch {}
+  }
 
   // User actions
   function addUser() { if (!accountId) return; const u = NEW_USER(); u.name = `Athlete ${users.length + 1}`; setUsers(prev => [...prev, u]); setSelectedId(u.id); }
@@ -399,6 +461,7 @@ export default function App() {
           </div>
           <div className="space-y-3">
             <button className={`${BTN_BASE} ${BTN_SOLID} w-full`} onClick={createAccount}>+ Ny profil</button>
+            <button className={`${BTN_BASE} ${BTN_SUBTLE} w-full`} onClick={connectWithCodeFlow}>Anslut med kod…</button>
             {accounts.length > 0 && (
               <div>
                 <div className="text-sm font-medium mb-2">Befintliga profiler</div>
@@ -439,9 +502,7 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
-              <button onClick={exportProfile} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Exportera</button>
-              <button onClick={() => importRef.current?.click()} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Importera</button>
-              <input ref={importRef} type="file" accept="application/json" className="hidden" onChange={e => e.target.files && importProfile(e.target.files[0])} />
+               e.target.files && importProfile(e.target.files[0])} />
               <button disabled={busy} onClick={syncNow} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Synkar…' : 'Synk nu'}</button>
               <button disabled={busy} onClick={saveRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Sparar…' : 'Spara till server'}</button>
               <button disabled={busy} onClick={loadRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy ? 'Laddar…' : 'Ladda från server'}</button>
@@ -467,14 +528,30 @@ export default function App() {
                       <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>setLinkPanel(v=>!v)}>Koppla enhet</button>
                     </div>
                     {linkPanel && (
-                      <div className="p-2 border rounded-xl text-xs space-y-2">
+                      <div className="p-2 border rounded-xl text-xs space-y-3">
                         <div className="font-medium">Delningslänk</div>
                         <div className="select-all break-all bg-slate-50 border rounded p-2">{shareLink}</div>
                         <div className="flex gap-2">
                           <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={copyShareLink}>Kopiera</button>
                           <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>setLinkPanel(false)}>Stäng</button>
                         </div>
-                        <div className="text-[10px] text-slate-500">Öppna länken på din andra enhet (mobil/dator) för att koppla denna profil.</div>
+
+                        <div className="pt-1 border-t" />
+                        <div className="font-medium">Anslut med kod eller länk</div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={linkCode}
+                            onChange={e=>setLinkCode(e.target.value)}
+                            placeholder="Klistra in kod eller ?k=…"
+                            className="rounded-xl border px-3 py-2 grow"
+                          />
+                          <button
+                            className={`${BTN_BASE} ${BTN_SUBTLE}`}
+                            onClick={()=>{ if (linkCode.trim()) { connectWithCodeFlow(linkCode.trim()); setLinkCode(""); setLinkPanel(false);} }}
+                          >Anslut</button>
+                        </div>
+                        <div className="text-[10px] text-slate-500">Öppna länken på din andra enhet (mobil/dator) eller klistra in delningskoden här för att koppla denna profil.</div>
                       </div>
                     )}
                   </div>
