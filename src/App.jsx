@@ -1,4 +1,16 @@
-import React, { useEffect, useMemo, useState } from "react";
+ICE_KEY = "mm2k_device_id_v1";
+
+const USERS_KEY = (accId) => `mm2k_users_${accId}_v3`;
+const META_KEY = (accId) => `mm2k_meta_${accId}_v3`;
+
+function uid() { return Math.random().toString(36).slice(2,10) + Math.random().toString(36).slice(2,10); }
+function generateOpaqueKey() { return uid(); }
+function getDeviceId() { let id=localStorage.getItem(DEVICE_KEY); if(!id){ id=uid(); localStorage.setItem(DEVICE_KEY,id);} return id; }
+function roundTo(x, step = 0.5) { const s=Number(step)||0.5; return Math.round((Number(x)||0)/s)*s; }
+
+function saveAccounts(list){ localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(list)); }
+function loadAccounts(){ try{ return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)||"[]"); } catch { return []; } }
+function saveUsers(accountId,import React, { useEffect, useMemo, useState } from "react";
 import { getQuote } from "./quotes.js";
 
 /************************
@@ -13,26 +25,14 @@ import { getQuote } from "./quotes.js";
 /****************
  * Versionsinfo
  ****************/
-export const APP_VERSION = "v2025.12.25-08"; // Öka denna när App.jsx uppdateras
+export const APP_VERSION = "v2025.12.25-10"; // Öka denna när App.jsx uppdateras
 
 /****************
  * Utils + Keys
  ****************/
 const CURRENT_ACCOUNT_KEY = "mm2k_current_account_v3";
 const ACCOUNTS_KEY = "mm2k_accounts_v3";
-const DEVICE_KEY = "mm2k_device_id_v1";
-
-const USERS_KEY = (accId) => `mm2k_users_${accId}_v3`;
-const META_KEY = (accId) => `mm2k_meta_${accId}_v3`;
-
-function uid() { return Math.random().toString(36).slice(2,10) + Math.random().toString(36).slice(2,10); }
-function generateOpaqueKey() { return uid(); }
-function getDeviceId() { let id=localStorage.getItem(DEVICE_KEY); if(!id){ id=uid(); localStorage.setItem(DEVICE_KEY,id);} return id; }
-function roundTo(x, step = 0.5) { const s=Number(step)||0.5; return Math.round((Number(x)||0)/s)*s; }
-
-function saveAccounts(list){ localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(list)); }
-function loadAccounts(){ try{ return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)||"[]"); } catch { return []; } }
-function saveUsers(accountId, users){ if(!accountId) return; localStorage.setItem(USERS_KEY(accountId), JSON.stringify(users)); }
+const DEV users){ if(!accountId) return; localStorage.setItem(USERS_KEY(accountId), JSON.stringify(users)); }
 function loadUsers(accountId){ if(!accountId) return []; try{ return JSON.parse(localStorage.getItem(USERS_KEY(accountId))||"[]"); } catch{ return []; } }
 function saveMeta(accountId, meta){ if(!accountId) return; localStorage.setItem(META_KEY(accountId), JSON.stringify(meta)); }
 function loadMeta(accountId){ if(!accountId) return {}; try{ return JSON.parse(localStorage.getItem(META_KEY(accountId))||"{}"); } catch{ return {}; } }
@@ -103,17 +103,6 @@ function renderStar(kind, key){ switch(kind){ case "gold": return <span key={key
 /****************
  * App
  ****************/
-// --- Nätverks‑helper (säker JSON-parsning) ---
-export async function safeJson(r) {
-  try {
-    const ct = r.headers?.get?.("content-type") || "";
-    if (!ct.includes("application/json")) return null;
-    return await r.json();
-  } catch {
-    return null;
-  }
-}
-
 export default function App(){
   // Accounts
   const [accounts, setAccounts] = useState(loadAccounts());
