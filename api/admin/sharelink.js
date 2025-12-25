@@ -1,5 +1,5 @@
 // /api/admin/sharelink.js
-export const config = { runtime: 'nodejs18.x' };
+export const config = { runtime: 'nodejs' };
 
 import { requireAdmin } from '../../utils/adminAuth.js';
 

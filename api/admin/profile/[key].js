@@ -1,5 +1,5 @@
 // /api/admin/profile/[key].js
-export const config = { runtime: 'nodejs18.x' };
+export const config = { runtime: 'nodejs' };
 
 import { requireAdmin, readJSON } from '../../../utils/adminAuth.js';
 import { list, put, del } from '@vercel/blob';
