@@ -1,4 +1,26 @@
-ICE_KEY = "mm2k_device_id_v1";
+import React, { useEffect, useMemo, useState } from "react";
+import { getQuote } from "./quotes.js";
+
+/************************
+ * MM2K Bench – App.jsx (v2025.12.25-13)
+ * - Lokala profiler (PIN, delningskod ?k=...)
+ * - Vercel Blob: spara/ladda/synka + historik
+ * - 14 pass, Failure Tests (#5,7,9,11,13) med låsning, undo, stjärnor
+ * - Popup‑quotes via quotes.js
+ * - Admin‑UI nås från "Historik" (färre knappar i header)
+ ************************/
+
+/****************
+ * Versionsinfo
+ ****************/
+export const APP_VERSION = "v2025.12.25-13"; // Öka denna när App.jsx uppdateras
+
+/****************
+ * Utils + Keys
+ ****************/
+const CURRENT_ACCOUNT_KEY = "mm2k_current_account_v3";
+const ACCOUNTS_KEY = "mm2k_accounts_v3";
+const DEVICE_KEY = "mm2k_device_id_v1";
 
 const USERS_KEY = (accId) => `mm2k_users_${accId}_v3`;
 const META_KEY = (accId) => `mm2k_meta_${accId}_v3`;
@@ -10,36 +32,14 @@ function roundTo(x, step = 0.5) { const s=Number(step)||0.5; return Math.round((
 
 function saveAccounts(list){ localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(list)); }
 function loadAccounts(){ try{ return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)||"[]"); } catch { return []; } }
-function saveUsers(accountId,import React, { useEffect, useMemo, useState } from "react";
-import { getQuote } from "./quotes.js";
-
-/************************
- * MM2K Bench – App.jsx (Admin via Historik + robust JSON)
- * - Lokala profiler (PIN, delningskod ?k=...)
- * - Vercel Blob: spara/ladda/synka + historik
- * - 14 pass, Failure Tests (#5,7,9,11,13) med låsning, undo, stjärnor
- * - Popup‑quotes via quotes.js
- * - Admin‑UI nås från Historik (färre knappar i header)
- ************************/
-
-/****************
- * Versionsinfo
- ****************/
-export const APP_VERSION = "v2025.12.25-10"; // Öka denna när App.jsx uppdateras
-
-/****************
- * Utils + Keys
- ****************/
-const CURRENT_ACCOUNT_KEY = "mm2k_current_account_v3";
-const ACCOUNTS_KEY = "mm2k_accounts_v3";
-const DEV users){ if(!accountId) return; localStorage.setItem(USERS_KEY(accountId), JSON.stringify(users)); }
+function saveUsers(accountId, users){ if(!accountId) return; localStorage.setItem(USERS_KEY(accountId), JSON.stringify(users)); }
 function loadUsers(accountId){ if(!accountId) return []; try{ return JSON.parse(localStorage.getItem(USERS_KEY(accountId))||"[]"); } catch{ return []; } }
 function saveMeta(accountId, meta){ if(!accountId) return; localStorage.setItem(META_KEY(accountId), JSON.stringify(meta)); }
 function loadMeta(accountId){ if(!accountId) return {}; try{ return JSON.parse(localStorage.getItem(META_KEY(accountId))||"{}"); } catch{ return {}; } }
 
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 
-// Robust JSON-läsare som ger vettigt fel vid Vite-dev utan serverless
+// Robust JSON-läsare som ger vettigt fel när svaret inte är JSON (t.ex. Edge-funktion som returnerar HTML)
 async function safeJson(res){
   const ct = res.headers.get('content-type') || '';
   const text = await res.text();
@@ -47,7 +47,7 @@ async function safeJson(res){
     try { return JSON.parse(text); } catch { throw new Error('Ogiltig JSON från servern.'); }
   }
   const head = (text || '').trim().slice(0, 160);
-  throw new Error(head || 'Svaret var inte JSON. Kör "vercel dev" lokalt eller använd den deployade Vercel-URL:en – Admin kräver serverless-API.');
+  throw new Error(head || 'Svaret var inte JSON. Kör "vercel dev" lokalt eller den deployade URL:en – admin kräver serverless-API.');
 }
 
 /****************
@@ -165,9 +165,17 @@ export default function App(){
   function removeUser(id){ const next=users.filter(u=>u.id!==id); setUsers(next); if(selectedId===id) setSelectedId(next[0]?.id||null); }
   function resetLogs(){ if(!selected) return; if(!window.confirm("Rensa alla loggar?")) return; updateSelected({ logs:{} }); }
 
-  function extractBlobKeyFromInput(input){ const raw=String(input||'').trim(); if(!raw) return null; if(/^[A-Za-z0-9_-]{12,}$/.test(raw)) return raw; try{ const u=new URL(raw); const k=u.searchParams.get('k'); if(k && /^[A-Za-z0-9_-]{12,}$/.test(k)) return k; const m=u.pathname.match(/\/profiles\/([A-Za-z0-9_-]{12,})\//); if(m&&m[1]) return m[1]; } catch{} const m2=raw.match(/profiles\/([A-Za-z0-9_-]{12,})\//); if(m2&&m2[1]) return m2[1]; const s=raw.replace(/\.json($|\?.*)/,''); const parts=s.split(/[?#/]/).filter(Boolean); const c=parts[parts.length-1]||''; if(/^[A-Za-z0-9_-]{12,}$/.test(c)) return c; return null; }
+  function extractBlobKeyFromInput(input){ const raw=String(input||'').trim(); if(!raw) return null; if(/^[A-Za-z0-9_-]{12,}$/.test(raw)) return raw; try{ const u=new URL(raw); const k=u.searchParams.get('k'); if(k && /^[A-Za-z0-9_-]{12,}$/.test(k)) return k; const m=u.pathname.match(/\/profiles\/([A-Za-z0-9_-]{12,})\//); if(m&&m[1]) return m[1]; } catch{} const m2=raw.match(/profiles\/([A-Za-z0-9_-]{12,})\//); if(m2&&m2[1]) return m2[1]; const s=raw.replace(/\.json($|\?.*)/,''); const parts=s.split(/[?#\/]/).filter(Boolean); const c=parts[parts.length-1]||''; if(/^[A-Za-z0-9_-]{12,}$/.test(c)) return c; return null; }
 
-  async function createAccount(){ const label=window.prompt("Profilnamn (t.ex. Vide)")||"Profil"; const maybe=window.prompt("Delningskod/länk (valfritt) ")||""; let blobKey=null; if(maybe.trim()){ blobKey=extractBlobKeyFromInput(maybe); if(!blobKey) alert("Koden/länken kunde inte tolkas."); } const pin=window.prompt("Valfri PIN (tom = ingen)")||""; const acc={ id:uid(), label, pin: pin.trim()? pin.trim(): null, blobKey: blobKey||generateOpaqueKey(), createdAt:new Date().toISOString()}; const next=[...accounts, acc]; setAccounts(next); setAccountId(acc.id); if(blobKey){ try{ const r=await fetch(`/api/profiles/${blobKey}`); if(r.ok){ const data=await safeJson(r); if(Array.isArray(data.users)) setUsers(data.users); if(data.profileMeta) setMeta(data.profileMeta); setToast({ type:'up', msg:'Profil kopplad och laddad från server.'}); } } catch(e){ alert(e.message);} }
+  async function createAccount(){
+    const label=window.prompt("Profilnamn (t.ex. Vide)")||"Profil";
+    const maybe=window.prompt("Delningskod/länk (valfritt) ")||"";
+    let blobKey=null;
+    if(maybe.trim()){ blobKey=extractBlobKeyFromInput(maybe); if(!blobKey) alert("Koden/länken kunde inte tolkas."); }
+    const pin=window.prompt("Valfri PIN (tom = ingen)")||"";
+    const acc={ id:uid(), label, pin: pin.trim()? pin.trim(): null, blobKey: blobKey||generateOpaqueKey(), createdAt:new Date().toISOString()};
+    const next=[...accounts, acc]; setAccounts(next); setAccountId(acc.id);
+    if(blobKey){ try{ const r=await fetch(`/api/profiles/${blobKey}`); if(r.ok){ const data=await safeJson(r); if(Array.isArray(data.users)) setUsers(data.users); if(data.profileMeta) setMeta(data.profileMeta); setToast({ type:'up', msg:'Profil kopplad och laddad från server.'}); } } catch(e){ alert(e.message);} }
   }
   function deleteAccount(id){ if(!window.confirm("Ta bort profilen?")) return; const next=accounts.filter(a=>a.id!==id); setAccounts(next); if(accountId===id) setAccountId(next[0]?.id||null); }
   function switchAccount(a){ if(a.pin){ const entered=window.prompt("Ange PIN")||""; if(entered!==a.pin){ alert("Fel PIN"); return; } } setAccountId(a.id); setShowAccountPanel(false); }
@@ -193,13 +201,26 @@ export default function App(){
   // Server (Blob)
   async function saveRemoteProfile(){ if(!accountId) return; const acc=accounts.find(a=>a.id===accountId); const blobKey=acc?.blobKey||acc?.id; setBusy(true); try{ const nextMeta={ rev:(meta?.rev||0)+1, lastSavedAt:new Date().toISOString(), savedByDeviceId:deviceId }; const profile={ users, profileMeta:nextMeta }; const r=await fetch('/api/profiles/save',{ method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ blobKey, profile })}); if(!r.ok) throw new Error('Save failed'); setMeta(nextMeta); setToast({ type:'up', msg:'Sparat till server (Blob)'}); } catch(e){ alert('Kunde inte spara: '+e.message);} finally{ setBusy(false);} }
   async function loadRemoteProfile(){ if(!accountId) return; const acc=accounts.find(a=>a.id===accountId); const blobKey=acc?.blobKey||acc?.id; setBusy(true); try{ const r=await fetch(`/api/profiles/${blobKey}`); if(!r.ok) throw new Error('Hittar ingen serverprofil'); const data=await safeJson(r); if(Array.isArray(data.users)) setUsers(data.users); if(data.profileMeta) setMeta(data.profileMeta); setToast({ type:'up', msg:'Laddat från server (Blob)'}); } catch(e){ alert('Kunde inte ladda: '+e.message);} finally{ setBusy(false);} }
-  function mergeProfiles(localUsers, remoteUsers){ const byId=new Map(remoteUsers.map(u=>[u.id,u])); const merged=[]; for(const lu of localUsers){ const ru=byId.get(lu.id); if(!ru){ merged.push(lu); continue;} const lDone=Object.values(lu.logs||{}).filter(x=>x.done).length; const rDone=Object.values(ru.logs||{}).filter(x=>x.done).length; merged.push(rDone>=lDone? ru: lu); byId.delete(lu.id);} for(const ru of byId.values()) merged.push(ru); return merged; }
+  function mergeProfiles(localUsers, remoteUsers){
+    const byId=new Map(remoteUsers.map(u=>[u.id,u]));
+    const merged=[];
+    for(const lu of localUsers){
+      const ru=byId.get(lu.id);
+      if(!ru){ merged.push(lu); continue; }
+      const lDone=Object.values(lu.logs||{}).filter(x=>x.done).length;
+      const rDone=Object.values(ru.logs||{}).filter(x=>x.done).length;
+      merged.push(rDone>=lDone? ru: lu);
+      byId.delete(lu.id);
+    }
+    for(const ru of byId.values()) merged.push(ru);
+    return merged;
+  }
   async function syncNow(){ if(!accountId) return; const acc=accounts.find(a=>a.id===accountId); const blobKey=acc?.blobKey||acc?.id; setBusy(true); try{ const r=await fetch(`/api/profiles/${blobKey}`); if(r.ok){ const remote=await safeJson(r); const remoteUsers=Array.isArray(remote.users)? remote.users:[]; const remoteMeta=remote.profileMeta||{rev:0}; const localRev=meta?.rev||0, remoteRev=remoteMeta.rev||0; if(remoteRev>localRev){ const merged=mergeProfiles(users, remoteUsers); setUsers(merged); setMeta(remoteMeta); setToast({ type:'up', msg:'Synk: hämtade och slog ihop ändringar.'}); } else if(remoteRev<localRev){ await saveRemoteProfile(); } else { setToast({ type:'note', msg:'Synk: inget att göra.'}); } } else { await saveRemoteProfile(); } } catch(e){ alert('Synk misslyckades: '+e.message);} finally{ setBusy(false);} }
   async function openHistory(){ if(!accountId) return; const acc=accounts.find(a=>a.id===accountId); const blobKey=acc?.blobKey||acc?.id; setHistoryOpen(true); setAdminInHistory(false); setHistoryBusy(true); try{ const r=await fetch(`/api/profiles/history?key=${blobKey}`); if(!r.ok) throw new Error('Kunde inte lista historik'); const data=await safeJson(r); setHistoryItems(Array.isArray(data.items)? data.items: []); } catch(e){ alert(e.message);} finally{ setHistoryBusy(false);} }
   async function restoreSnapshot(item){ try{ const r=await fetch(item.url); if(!r.ok) throw new Error('Kunde inte hämta snapshot'); const data=await safeJson(r); if(Array.isArray(data.users)) setUsers(data.users); if(data.profileMeta) setMeta(data.profileMeta); setToast({ type:'up', msg:'Återställde snapshot lokalt. Spara till server för att skriva över.'}); } catch(e){ alert(e.message);} }
 
   // Admin login/logout (via Historik)
-  async function adminLogin(){ const code=window.prompt("Admin kod (6 siffror):"); if(!code) return false; try{ const r=await fetch('/api/admin/login',{ method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ code })}); if (r.status === 204 || r.status === 200 || r.ok){ setIsAdmin(true); setToast({ type:'up', msg:'Adminläge aktiverat'}); return true; } else { throw new Error('Fel kod'); } } catch(e){ alert(e.message); return false; } }
+  async function adminLogin(){ const code=window.prompt("Admin kod (6 siffror):"); if(!code) return false; try{ const r=await fetch('/api/admin/login',{ method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ code })}); if (r.status === 204 || r.status === 200 || r.ok){ setIsAdmin(true); setToast({ type:'up', msg:'Adminläge aktiverat'}); return true; } else { const j = await safeJson(r); const reason = j?.error || j?.details || `${r.status} ${r.statusText}`; throw new Error('Fel kod: '+reason); } } catch(e){ alert(e.message); return false; } }
   async function adminLogout(){ try{ await fetch('/api/admin/login',{ method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ logout:true })}); } finally { setIsAdmin(false); setAdminInHistory(false); } }
 
   const activeAcc = accounts.find(a=>a.id===accountId);
@@ -588,7 +609,7 @@ function AdminPanel(){
   const [selectedProfile, setSelectedProfile] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(()=>{ (async()=>{ try{ const r=await fetch("/api/admin/profiles"+(q?`?q=${encodeURIComponent(q)}`:"")); if(r.ok){ const j=await safeJson(r); setRows(j.items||[]);} else { throw new Error('Admin-listning misslyckades'); } } catch(e){ alert(e.message);} })(); },[q]);
+  useEffect(()=>{ (async()=>{ try{ const r=await fetch("/api/admin/profiles"+(q?`?q=${encodeURIComponent(q)}`:"")); const j=await safeJson(r); if(r.ok){ setRows(j?.items||[]);} else { const reason = j?.error || j?.details || `${r.status} ${r.statusText}`; throw new Error('Admin-listning misslyckades: '+reason); } } catch(e){ alert(e.message);} })(); },[q]);
 
   async function copyLink(key){
     try{
@@ -642,7 +663,7 @@ ${link}`);
               <div className="text-xs text-slate-500">Användare ({selectedProfile.users?.length||0})</div>
               <div className="divide-y">
                 {(selectedProfile.users||[]).map(u=> (
-                  <div key={u.id} className="py-2 flex items-center justify-between gap-2">
+                  <div key={u.id} className="py-2 flex items-center justify_between gap-2">
                     <div className="min-w-0">
                       <div className="font-medium truncate">{u.name||'Namnlös'}</div>
                       <div className="text-xs text-slate-500">1RM {u.oneRmKg} · Arb1RM {u.workingRmKg}</div>
