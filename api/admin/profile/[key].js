@@ -1,91 +1,83 @@
 // /api/admin/profile/[key].js
-export const config = { runtime: 'nodejs' };
+// GET = hämta senaste JSON, DELETE = rensa alla, PATCH = enkla adminåtgärder
 
-import { requireAdmin, readJSON } from '../../../utils/adminAuth.js';
-import { list, put, del } from '@vercel/blob';
+import { isAdminFromReq } from "../login.js";
+import { list, put, del } from "@vercel/blob";
 
-async function loadLatestProfile(key){
-  const prefix = `profiles/${key}/`;
-  const out = await list({ prefix, limit: 100, token: process.env.BLOB_READ_WRITE_TOKEN });
-  // hitta senaste profile.json
-  const profs = (out.blobs || []).filter(b=>b.pathname.endsWith('/profile.json'));
-  if (profs.length === 0) return null;
-  const latest = profs.sort((a,b)=> new Date(b.uploadedAt)-new Date(a.uploadedAt))[0];
-  const r = await fetch(latest.url);
-  if (!r.ok) throw new Error('fetch_failed');
-  const j = await r.json();
-  return { data: j, latest };
+export const config = { runtime: "nodejs" };
+
+const TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+
+async function readLatest(key) {
+  const { blobs } = await list({ prefix: `mm2k/profiles/${key}/`, token: TOKEN });
+  let cand = blobs.find(b=> b.pathname.endsWith("/latest.json"));
+  if (!cand) cand = blobs.slice().sort((a,b)=> new Date(b.uploadedAt||0) - new Date(a.uploadedAt||0))[0];
+  if (!cand) return null;
+  const r = await fetch(cand.url);
+  if (!r.ok) throw new Error("Fetch latest failed");
+  return await r.json();
 }
 
-async function saveProfile(key, data){
-  const pathname = `profiles/${key}/profile.json`;
-  await put(pathname, JSON.stringify(data), { access: 'public', token: process.env.BLOB_READ_WRITE_TOKEN });
+async function writeSnapshot(key, profile) {
+  const now = new Date().toISOString().replace(/[:.]/g, "-");
+  const base = `mm2k/profiles/${key}`;
+  const body = JSON.stringify(profile, null, 2);
+  await put(`${base}/${now}.json`, body, { access: "public", addRandomSuffix: false, token: TOKEN, contentType: "application/json" });
+  await put(`${base}/latest.json`, body, { access: "public", addRandomSuffix: false, token: TOKEN, contentType: "application/json" });
 }
 
-export default async function handler(req, res){
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const key = url.pathname.split('/').pop();
+export default async function handler(req, res) {
+  if (!isAdminFromReq(req)) { res.status(401).json({ error: "Unauthorized" }); return; }
 
-  if (!requireAdmin(req,res)) return;
+  const key = req.query.key;
+  if (!key) { res.status(400).json({ error: "Missing key" }); return; }
 
-  if (req.method === 'GET') {
+  if (req.method === "GET") {
     try {
-      const p = await loadLatestProfile(key);
-      if (!p) { res.statusCode=404; return res.end(JSON.stringify({ error:'not_found'})); }
-      res.setHeader('content-type','application/json; charset=utf-8');
-      return res.end(JSON.stringify(p.data));
-    } catch (e){
-      res.statusCode=500; res.setHeader('content-type','application/json'); return res.end(JSON.stringify({ error:'get_failed', details:e.message }));
-    }
+      const profile = await readLatest(key);
+      if (!profile) { res.status(404).json({ error: "Not found" }); return; }
+      res.status(200).json(profile);
+    } catch(e) { res.status(500).json({ error: "Read failed", details: String(e?.message || e) }); }
+    return;
   }
 
-  if (req.method === 'PATCH') {
-    try{
-      const body = await readJSON(req);
-      const p = await loadLatestProfile(key);
-      if (!p) { res.statusCode=404; return res.end(JSON.stringify({ error:'not_found'})); }
-      const prof = p.data || {};
-      prof.users = Array.isArray(prof.users) ? prof.users : [];
-      prof.profileMeta = prof.profileMeta || { rev: 0 };
+  if (req.method === "DELETE") {
+    try {
+      const { blobs } = await list({ prefix: `mm2k/profiles/${key}/`, token: TOKEN });
+      await del(blobs.map(b=> b.pathname), { token: TOKEN });
+      res.status(204).end();
+    } catch(e) { res.status(500).json({ error: "Delete failed", details: String(e?.message || e) }); }
+    return;
+  }
 
-      const { op } = body || {};
-      if (op === 'renameUser') {
-        const u = prof.users.find(x=>x.id===body.id);
-        if (u) u.name = String(body.name ?? u.name);
-      } else if (op === 'setWorkingRm') {
-        const u = prof.users.find(x=>x.id===body.id);
-        if (u) u.workingRmKg = Number(body.value);
-      } else if (op === 'resetLogs') {
-        const u = prof.users.find(x=>x.id===body.id);
-        if (u) u.logs = {};
-      } else if (op === 'removeUser') {
-        prof.users = prof.users.filter(x=>x.id!==body.id);
+  if (req.method === "PATCH") {
+    const chunks = []; for await (const c of req) chunks.push(c);
+    let body = null; try { body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "null"); } catch {}
+    const { op } = body || {};
+    if (!op) { res.status(400).json({ error: "Missing op" }); return; }
+
+    try {
+      const cur = (await readLatest(key)) || { users: [], profileMeta: { rev: 0 } };
+      const users = Array.isArray(cur.users) ? cur.users.slice() : [];
+      const meta = { ...(cur.profileMeta||{}), rev: (cur.profileMeta?.rev||0)+1, lastSavedAt: new Date().toISOString() };
+
+      if (op === "renameUser") {
+        const { id, name } = body; const u = users.find(x=>x.id===id); if (u) u.name = name;
+      } else if (op === "setWorkingRm") {
+        const { id, value } = body; const u = users.find(x=>x.id===id); if (u) u.workingRmKg = Number(value)||0;
+      } else if (op === "resetLogs") {
+        const { id } = body; const u = users.find(x=>x.id===id); if (u) u.logs = {};
+      } else if (op === "removeUser") {
+        const { id } = body; const idx = users.findIndex(x=>x.id===id); if (idx>=0) users.splice(idx,1);
       } else {
-        res.statusCode=400; return res.end(JSON.stringify({ error:'bad_op'}));
+        res.status(400).json({ error: "Unknown op" }); return;
       }
 
-      prof.profileMeta.rev = (prof.profileMeta.rev||0)+1;
-      prof.profileMeta.lastSavedAt = new Date().toISOString();
-
-      await saveProfile(key, prof);
-      res.setHeader('content-type','application/json; charset=utf-8');
-      return res.end(JSON.stringify({ ok:true, rev: prof.profileMeta.rev }));
-    } catch(e){
-      res.statusCode=500; res.setHeader('content-type','application/json'); return res.end(JSON.stringify({ error:'patch_failed', details:e.message }));
-    }
+      await writeSnapshot(key, { users, profileMeta: meta });
+      res.status(204).end();
+    } catch(e){ res.status(500).json({ error: "Patch failed", details: String(e?.message || e) }); }
+    return;
   }
 
-  if (req.method === 'DELETE') {
-    try {
-      const prefix = `profiles/${key}/`;
-      const out = await list({ prefix, limit: 1000, token: process.env.BLOB_READ_WRITE_TOKEN });
-      const paths = (out.blobs||[]).map(b=>b.pathname);
-      if (paths.length) await del(paths, { token: process.env.BLOB_READ_WRITE_TOKEN });
-      res.statusCode=204; return res.end();
-    } catch(e){
-      res.statusCode=500; res.setHeader('content-type','application/json'); return res.end(JSON.stringify({ error:'delete_failed', details:e.message }));
-    }
-  }
-
-  res.statusCode=405; res.end();
+  res.status(405).end();
 }

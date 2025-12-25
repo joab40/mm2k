@@ -1,15 +1,12 @@
 // /api/admin/sharelink.js
-export const config = { runtime: 'nodejs' };
+import { isAdminFromReq } from "./login.js";
 
-import { requireAdmin } from '../../utils/adminAuth.js';
+export const config = { runtime: "nodejs" };
 
-export default async function handler(req, res){
-  if (!requireAdmin(req,res)) return;
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const key = url.searchParams.get('key');
-  if (!key) { res.statusCode=400; res.setHeader('content-type','application/json'); return res.end(JSON.stringify({ error:'missing key' })); }
-
-  const base = String(process.env.PUBLIC_BASE_URL || `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}`);
-  res.setHeader('content-type','application/json; charset=utf-8');
-  return res.end(JSON.stringify({ link: `${base}?k=${encodeURIComponent(key)}` }));
+export default async function handler(req, res) {
+  if (!isAdminFromReq(req)) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const key = req.query.key;
+  if (!key) { res.status(400).json({ error: "Missing key" }); return; }
+  const base = process.env.PUBLIC_BASE_URL || `https://${req.headers.host || ""}`;
+  res.status(200).json({ link: `${base}?k=${encodeURIComponent(key)}` });
 }
