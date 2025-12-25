@@ -1,34 +1,30 @@
-// /api/profiles/history.js (ESM)
-import { list, head } from '@vercel/blob';
+export const config = { runtime: "nodejs" };
+import { list } from "@vercel/blob";
 
 export default async function handler(req, res) {
   try {
-    const { key } = req.query;
-    if (!key) return res.status(400).json({ error: 'Missing ?key=' });
+    const key = (req.query.key || "").toString();
+    if (!key) return res.status(400).json({ error: "missing key" });
 
-    const prefix = `profiles/${key}/history/`;
     const items = [];
     let cursor;
-
     do {
-      const resp = await list({ prefix, cursor, token: process.env.BLOB_READ_WRITE_TOKEN });
-      for (const b of resp.blobs || []) {
-        const meta = await head(b.pathname, { token: process.env.BLOB_READ_WRITE_TOKEN });
-        items.push({
-          pathname: b.pathname,
-          uploadedAt: b.uploadedAt || meta?.uploadedAt || null,
-          size: b.size ?? meta?.size ?? null,
-          url: meta?.downloadUrl || meta?.url, // direkt JSON-url
-        });
+      const { blobs, cursor: next } = await list({
+        prefix: `profiles/${key}/`,
+        cursor,
+        token: process.env.BLOB_READ_WRITE_TOKEN
+      });
+      cursor = next;
+      for (const b of blobs) {
+        if (!/\/rev-\d+\.json$/.test(b.pathname)) continue;
+        items.push({ pathname: b.pathname, url: b.url, size: b.size, uploadedAt: b.uploadedAt });
       }
-      cursor = resp?.cursor;
     } while (cursor);
 
-    // Senaste först
-    items.sort((a, b) => (new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0)) || b.pathname.localeCompare(a.pathname));
-
-    res.status(200).json({ items });
+    items.sort((a, b) => (a.uploadedAt || 0) < (b.uploadedAt || 0) ? 1 : -1);
+    return res.status(200).json({ items });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error("HISTORY_ERROR", e);
+    return res.status(500).json({ error: String(e?.message || e) });
   }
 }
