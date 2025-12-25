@@ -1,68 +1,91 @@
-// api/admin/profile/[key].js
-import { list, del, put } from "@vercel/blob";
-import { requireAdmin } from "../../_lib/auth.js";
+// /api/admin/profile/[key].js
+export const config = { runtime: 'nodejs18.x' };
 
-export const config = { api: { bodyParser: { sizeLimit: "2mb" } } };
+import { requireAdmin, readJSON } from '../../../utils/adminAuth.js';
+import { list, put, del } from '@vercel/blob';
 
-export default async function handler(req, res) {
-  if (!requireAdmin(req, res)) return;
-  const key = req.url.split("/api/admin/profile/")[1]?.split("?")[0];
-  if (!key) { res.status(400).json({ error: "Missing key" }); return; }
-
-  if (req.method === "GET") {
-    // Hämta profile.json
-    const url = `profiles/${key}/profile.json`;
-    try {
-      const r = await fetch(url);
-      if (!r.ok) { res.status(r.status).json({ error: "Not found" }); return; }
-      const json = await r.json();
-      res.status(200).json(json);
-    } catch (e) { res.status(500).json({ error: String(e) }); }
-    return;
-  }
-
-  if (req.method === "PATCH") {
-    try {
-      const patch = await readJson(req);
-      const url = `profiles/${key}/profile.json`;
-      const r = await fetch(url);
-      const current = r.ok ? await r.json() : { users: [], profileMeta: { rev: 0 } };
-      const next = applyPatch(current, patch);
-      // bump rev
-      next.profileMeta = { ...(next.profileMeta||{}), rev: (current?.profileMeta?.rev||0)+1, lastSavedAt: new Date().toISOString(), savedByDeviceId: "admin" };
-      await put(url, JSON.stringify(next), { access: "public", contentType: "application/json" });
-      res.status(200).json({ ok: true });
-    } catch (e) { res.status(500).json({ error: String(e) }); }
-    return;
-  }
-
-  if (req.method === "DELETE") {
-    // rensa ALLT under profiles/<key>/*
-    const { blobs } = await list({ prefix: `profiles/${key}/` });
-    await Promise.all(blobs.map(b => del(b.url)));
-    res.status(204).end();
-    return;
-  }
-
-  res.setHeader("Allow", "GET,PATCH,DELETE");
-  res.status(405).end();
+async function loadLatestProfile(key){
+  const prefix = `profiles/${key}/`;
+  const out = await list({ prefix, limit: 100, token: process.env.BLOB_READ_WRITE_TOKEN });
+  // hitta senaste profile.json
+  const profs = (out.blobs || []).filter(b=>b.pathname.endsWith('/profile.json'));
+  if (profs.length === 0) return null;
+  const latest = profs.sort((a,b)=> new Date(b.uploadedAt)-new Date(a.uploadedAt))[0];
+  const r = await fetch(latest.url);
+  if (!r.ok) throw new Error('fetch_failed');
+  const j = await r.json();
+  return { data: j, latest };
 }
 
-function readJson(req) {
-  return new Promise((resolve) => {
-    let body = ""; req.on("data", (c)=> body+=c);
-    req.on("end", ()=> { try { resolve(JSON.parse(body||"{}")); } catch { resolve({}); } });
-  });
+async function saveProfile(key, data){
+  const pathname = `profiles/${key}/profile.json`;
+  await put(pathname, JSON.stringify(data), { access: 'public', token: process.env.BLOB_READ_WRITE_TOKEN });
 }
 
-// Exempel-patch: { op:"renameUser", id:"...", name:"Ny" } | { op:"removeUser", id:"..." } | { op:"resetLogs", id:"..." }
-function applyPatch(cur, p) {
-  const next = JSON.parse(JSON.stringify(cur||{}));
-  next.users ||= [];
-  const idx = next.users.findIndex(u => u.id === p.id);
-  if (p.op === "renameUser" && idx>=0) next.users[idx].name = String(p.name||"");
-  if (p.op === "resetLogs" && idx>=0) next.users[idx].logs = {};
-  if (p.op === "removeUser" && idx>=0) next.users.splice(idx,1);
-  if (p.op === "setWorkingRm" && idx>=0) next.users[idx].workingRmKg = Number(p.value||0);
-  return next;
+export default async function handler(req, res){
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const key = url.pathname.split('/').pop();
+
+  if (!requireAdmin(req,res)) return;
+
+  if (req.method === 'GET') {
+    try {
+      const p = await loadLatestProfile(key);
+      if (!p) { res.statusCode=404; return res.end(JSON.stringify({ error:'not_found'})); }
+      res.setHeader('content-type','application/json; charset=utf-8');
+      return res.end(JSON.stringify(p.data));
+    } catch (e){
+      res.statusCode=500; res.setHeader('content-type','application/json'); return res.end(JSON.stringify({ error:'get_failed', details:e.message }));
+    }
+  }
+
+  if (req.method === 'PATCH') {
+    try{
+      const body = await readJSON(req);
+      const p = await loadLatestProfile(key);
+      if (!p) { res.statusCode=404; return res.end(JSON.stringify({ error:'not_found'})); }
+      const prof = p.data || {};
+      prof.users = Array.isArray(prof.users) ? prof.users : [];
+      prof.profileMeta = prof.profileMeta || { rev: 0 };
+
+      const { op } = body || {};
+      if (op === 'renameUser') {
+        const u = prof.users.find(x=>x.id===body.id);
+        if (u) u.name = String(body.name ?? u.name);
+      } else if (op === 'setWorkingRm') {
+        const u = prof.users.find(x=>x.id===body.id);
+        if (u) u.workingRmKg = Number(body.value);
+      } else if (op === 'resetLogs') {
+        const u = prof.users.find(x=>x.id===body.id);
+        if (u) u.logs = {};
+      } else if (op === 'removeUser') {
+        prof.users = prof.users.filter(x=>x.id!==body.id);
+      } else {
+        res.statusCode=400; return res.end(JSON.stringify({ error:'bad_op'}));
+      }
+
+      prof.profileMeta.rev = (prof.profileMeta.rev||0)+1;
+      prof.profileMeta.lastSavedAt = new Date().toISOString();
+
+      await saveProfile(key, prof);
+      res.setHeader('content-type','application/json; charset=utf-8');
+      return res.end(JSON.stringify({ ok:true, rev: prof.profileMeta.rev }));
+    } catch(e){
+      res.statusCode=500; res.setHeader('content-type','application/json'); return res.end(JSON.stringify({ error:'patch_failed', details:e.message }));
+    }
+  }
+
+  if (req.method === 'DELETE') {
+    try {
+      const prefix = `profiles/${key}/`;
+      const out = await list({ prefix, limit: 1000, token: process.env.BLOB_READ_WRITE_TOKEN });
+      const paths = (out.blobs||[]).map(b=>b.pathname);
+      if (paths.length) await del(paths, { token: process.env.BLOB_READ_WRITE_TOKEN });
+      res.statusCode=204; return res.end();
+    } catch(e){
+      res.statusCode=500; res.setHeader('content-type','application/json'); return res.end(JSON.stringify({ error:'delete_failed', details:e.message }));
+    }
+  }
+
+  res.statusCode=405; res.end();
 }

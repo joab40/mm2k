@@ -1,25 +1,35 @@
-// api/admin/login.js
-import { setAdminCookie, clearAdminCookie } from "./_lib/auth.js";
+// /api/admin/login.js
+export const config = { runtime: 'nodejs18.x' };
 
-export default async function handler(req, res) {
-  if (req.method === "POST") {
-    const { code, logout } = await readJson(req);
-    if (logout) { clearAdminCookie(res); res.status(204).end(); return; }
+import { newPayload, signSession, setAdminCookie, clearAdminCookie, readJSON } from '../../utils/adminAuth.js';
 
-    const ok = String(code || "") === String(process.env.ADMIN_CODE || "");
-    if (!ok) { res.status(401).json({ error: "Bad code" }); return; }
-    if (!process.env.ADMIN_SECRET) { res.status(500).json({ error: "Missing ADMIN_SECRET" }); return; }
+export default async function handler(req, res){
+  if (req.method !== 'POST') { res.statusCode=405; return res.end(); }
 
-    setAdminCookie(res, process.env.ADMIN_SECRET, 30); // 30 min
-    res.status(204).end();
-    return;
+  const body = await readJSON(req);
+  const input = String(body.code ?? '').trim();
+
+  const ADMIN_CODE   = String(process.env.ADMIN_CODE   || '').trim();
+  const ADMIN_SECRET = String(process.env.ADMIN_SECRET || '').trim();
+
+  if (!ADMIN_CODE || !ADMIN_SECRET) {
+    res.statusCode=500;
+    res.setHeader('content-type','application/json; charset=utf-8');
+    return res.end(JSON.stringify({ error:'Server misconfigured' }));
   }
-  res.setHeader("Allow", "POST"); res.status(405).end();
-}
 
-function readJson(req) {
-  return new Promise((resolve) => {
-    let body = ""; req.on("data", (c)=> body+=c);
-    req.on("end", ()=> { try { resolve(JSON.parse(body||"{}")); } catch { resolve({}); } });
-  });
+  if (body.logout) {
+    clearAdminCookie(req, res);
+    return res.end(); // 200
+  }
+
+  if (input !== ADMIN_CODE) {
+    res.statusCode=401;
+    res.setHeader('content-type','application/json; charset=utf-8');
+    return res.end(JSON.stringify({ error:'Bad code' }));
+  }
+
+  const token = signSession(newPayload(24*60*60*1000), ADMIN_SECRET);
+  setAdminCookie(req, res, token);
+  return res.end(); // 200
 }

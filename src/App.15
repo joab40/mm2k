@@ -13,7 +13,7 @@ import { getQuote } from "./quotes.js";
 /****************
  * Versionsinfo
  ****************/
-export const APP_VERSION = "v2025.12.25-03"; // Öka denna när App.jsx uppdateras
+export const APP_VERSION = "v2025.12.25-02"; // Öka denna när App.jsx uppdateras
 
 /****************
  * Utils + Keys
@@ -261,7 +261,7 @@ export default function App(){
               <button disabled={busy} onClick={syncNow} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy? 'Synkar…':'Synk nu'}</button>
               <button disabled={busy} onClick={saveRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy? 'Sparar…':'Spara till server'}</button>
               <button disabled={busy} onClick={loadRemoteProfile} className={`${BTN_BASE} ${BTN_SUBTLE} disabled:opacity-50`}>{busy? 'Laddar…':'Ladda från server'}</button>
-              <button onClick={openHistory} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Historik</button>
+              <button onClick={openHistory} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Historik & Admin</button>
               <div className="relative">
                 <button onClick={()=>setShowAccountPanel(v=>!v)} className={`${BTN_BASE} ${BTN_SUBTLE}`}>Profil: {activeAcc?.label||'Okänd'}</button>
                 {showAccountPanel && (
