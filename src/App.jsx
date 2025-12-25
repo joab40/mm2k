@@ -2,21 +2,23 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { getQuote } from "./quotes.js";
 
-export const APP_VERSION = "v2025.12.25-16";
+export const APP_VERSION = "v2025.12.25-17";
 
-/* ----------------------- små helpers ----------------------- */
+/* ───────────────────────── helpers ───────────────────────── */
 const uid = () => Math.random().toString(36).slice(2);
 const roundTo = (v, step = 2.5) => Math.round(v / step) * step;
+const safeNum = (n) => (Number.isFinite(+n) ? +n : 0);
+
 const ACCOUNTS_KEY = "mm2k_accounts";
 const CURRENT_ACCOUNT_KEY = "mm2k_current_account";
-
 function saveAccounts(list){ localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(list)); }
 function loadAccounts(){ try{ return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)||"[]"); } catch { return []; } }
 function saveUsers(accountId, list){ localStorage.setItem(`mm2k_users_${accountId}`, JSON.stringify(list)); }
 function loadUsers(accountId){ try{ return JSON.parse(localStorage.getItem(`mm2k_users_${accountId}`)||"[]"); } catch { return []; } }
 
-function safeNum(n){ n = Number(n); return Number.isFinite(n) ? n : 0; }
+async function safeJson(r){ try{ const ct=r.headers?.get?.("content-type")||""; return ct.includes("application/json")? await r.json(): null; } catch { return null; } }
 
+/* ───────────────────── stjärnor (FT) ────────────────────── */
 function starFromReps(reps){
   if (typeof reps !== "number" || Number.isNaN(reps)) return "none";
   if (reps >= 8) return "gold";
@@ -24,45 +26,77 @@ function starFromReps(reps){
   return "bronze";
 }
 function renderStar(kind, key) {
-  const style = "opacity-25";
-  if (kind === "gold") return <span key={key} title="FT ≥ 8" aria-label="gold">⭐️</span>;
-  if (kind === "silver") return <span key={key} title="FT 4–7" aria-label="silver">✨</span>;
-  if (kind === "bronze") return <span key={key} title="FT ≤ 3" aria-label="bronze">🌟</span>;
-  return <span key={key} className={style} title="Ej gjort">⭐️</span>;
+  const dim = "opacity-25";
+  if (kind === "gold") return <span key={key} title="FT ≥ 8">⭐️</span>;
+  if (kind === "silver") return <span key={key} title="FT 4–7">✨</span>;
+  if (kind === "bronze") return <span key={key} title="FT ≤ 3">🌟</span>;
+  return <span key={key} className={dim} title="Ej gjort">⭐️</span>;
 }
 
-/* ----------------------- program & pass ----------------------- */
-// Kortad workout-definition – samma mönster som tidigare version
-const FT_IDS = ["W2B","W3B","W4B","W5B","W6B"];
-const WORKOUTS = [
-  { id:"W1A", name:"Vecka 1 – Pass A", blocks:[{r:8,p:0.7},{r:6,p:0.75}] },
-  { id:"W1B", name:"Vecka 1 – Pass B (negativt)", blocks:[{r:1,p:1.1,neg:true}] },
-  { id:"W2A", name:"Vecka 2 – Pass A", blocks:[{r:5,p:0.8},{r:3,p:0.85}] },
-  { id:"W2B", name:"Vecka 2 – Pass B (Failure Test)", blocks:[{r:3,p:0.8},{r:"FT",p:0.8,ft:true}] },
-  { id:"W3A", name:"Vecka 3 – Pass A", blocks:[{r:5,p:0.82},{r:3,p:0.87}] },
-  { id:"W3B", name:"Vecka 3 – Pass B (Failure Test)", blocks:[{r:3,p:0.82},{r:"FT",p:0.82,ft:true}] },
-  { id:"W4A", name:"Vecka 4 – Pass A", blocks:[{r:3,p:0.85},{r:2,p:0.9}] },
-  { id:"W4B", name:"Vecka 4 – Pass B (Failure Test)", blocks:[{r:2,p:0.85},{r:"FT",p:0.85,ft:true}] },
-  { id:"W5A", name:"Vecka 5 – Pass A", blocks:[{r:2,p:0.9},{r:1,p:0.95}] },
-  { id:"W5B", name:"Vecka 5 – Pass B (Failure Test)", blocks:[{r:1,p:0.9},{r:"FT",p:0.9,ft:true}] },
-  { id:"W6A", name:"Vecka 6 – Pass A (negativt)", blocks:[{r:1,p:1.1,neg:true}] },
-  { id:"W6B", name:"Vecka 6 – Pass B (max-test)", blocks:[{r:1,p:1.15,max:true}] },
+/* ─────────────── MM2K: Workout 1–14 (huvudsätt) ───────────────
+  Obs: Vi injicerar uppvärmning dynamiskt, så varje pass får
+  alltid 4–6 rader i tabellen även om programmet bara har 1–2
+  huvudsätt. FT-dagar styr viktjustering (±2.5 kg).
+-----------------------------------------------------------------*/
+const PROGRAM = [
+  { id:"W1",  name:"Workout 1",  blocks:[{r:8,p:0.70},{r:6,p:0.75},{r:4,p:0.80}] },
+  { id:"W2",  name:"Workout 2 (negativt)", blocks:[{r:1,p:1.10,neg:true}] },
+  { id:"W3",  name:"Workout 3",  blocks:[{r:5,p:0.80},{r:3,p:0.85}] },
+  { id:"W4",  name:"Workout 4 (Failure Test)", blocks:[{r:3,p:0.80},{r:"FT",p:0.80,ft:true}] },
+  { id:"W5",  name:"Workout 5",  blocks:[{r:5,p:0.82},{r:3,p:0.87}] },
+  { id:"W6",  name:"Workout 6 (Failure Test)", blocks:[{r:3,p:0.82},{r:"FT",p:0.82,ft:true}] },
+  { id:"W7",  name:"Workout 7",  blocks:[{r:3,p:0.85},{r:2,p:0.90}] },
+  { id:"W8",  name:"Workout 8 (Failure Test)", blocks:[{r:2,p:0.85},{r:"FT",p:0.85,ft:true}] },
+  { id:"W9",  name:"Workout 9",  blocks:[{r:2,p:0.90},{r:1,p:0.95}] },
+  { id:"W10", name:"Workout 10 (Failure Test)", blocks:[{r:1,p:0.90},{r:"FT",p:0.90,ft:true}] },
+  { id:"W11", name:"Workout 11 (negativt)", blocks:[{r:1,p:1.10,neg:true}] },
+  { id:"W12", name:"Workout 12 (Failure Test)", blocks:[{r:1,p:0.92},{r:"FT",p:0.92,ft:true}] },
+  { id:"W13", name:"Workout 13 (tung single)", blocks:[{r:1,p:1.00}] },
+  { id:"W14", name:"Workout 14 (max-test)", blocks:[{r:1,p:1.15,max:true}] },
 ];
+// vilka är FT för stjärnorna/prognosen:
+const FT_IDS = PROGRAM.filter(w => w.blocks.some(b => b.ft)).map(w => w.id);
 
-/* ----------------------- nätverks-helper ----------------------- */
-async function safeJson(r) {
-  try {
-    const ct = r.headers?.get?.("content-type") || "";
-    if (!ct.includes("application/json")) return null;
-    return await r.json();
-  } catch { return null; }
+/* Bygger huvudsätt (utan uppvärmning) för en användare */
+function buildPrimaryRows(user, workout){
+  const base = user?.workingRmKg || user?.oneRmKg || 0;
+  const step = user?.rounding || 2.5;
+  return workout.blocks.map((b, i) => ({
+    label: b.ft ? (i === 0 ? "Block 1" : "Failure Test") : b.neg ? "Negativt 1×1" : b.max ? "Max-test 1×1" : `Block ${i+1}`,
+    reps: b.ft ? "FT" : b.r,
+    targetKg: roundTo(base * b.p, step),
+    kind: b.ft ? "failure" : b.neg ? "negative" : b.max ? "max" : "work",
+  }));
 }
 
-/* ==============================================================
-   HUVUDKOMPONENT
-   ============================================================== */
-export default function App() {
-  /* konton/profiler */
+/* Lägger till uppvärmningsset framför huvudsätten */
+function injectWarmups(user, rows){
+  const out = [];
+  const base = user?.workingRmKg || user?.oneRmKg || 0;
+  if (base <= 0) return rows.slice();
+
+  // uppvärmning baserat på tyngsta huvudsättet
+  const top = rows.reduce((m,r)=> Math.max(m, r.targetKg||0), 0);
+  const plan = [
+    { label:"Uppv. 1", reps:5, p:0.50 },
+    { label:"Uppv. 2", reps:3, p:0.60 },
+    { label:"Uppv. 3", reps:2, p:0.70 },
+  ];
+  if (top >= base*0.85) plan.push({ label:"Uppv. 4", reps:1, p:0.80 });
+
+  for (const w of plan){
+    const kg = roundTo(base*w.p, user.rounding||2.5);
+    // undvik dubletter om första huvudsätt råkar vara samma kg
+    if (!rows.some(r => r.targetKg === kg && String(r.reps) === String(w.reps))) {
+      out.push({ label:w.label, reps:w.reps, targetKg:kg, kind:"warmup" });
+    }
+  }
+  return [...out, ...rows];
+}
+
+/* ───────────────────── huvudkomponent ───────────────────── */
+export default function App(){
+  // konton/profiler
   const [accounts, setAccounts] = useState(loadAccounts());
   const [accountId, setAccountId] = useState(()=> localStorage.getItem(CURRENT_ACCOUNT_KEY) || (loadAccounts()[0]?.id || null));
   const [users, setUsers] = useState(()=> accountId ? loadUsers(accountId) : []);
@@ -72,21 +106,21 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
-  /* historik/admin */
+  // historik/admin
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyItems, setHistoryItems] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminInHistory, setAdminInHistory] = useState(false);
 
-  /* fetch-patch för admin */
+  // se till att alla /api/admin/* går med cookies
   useEffect(()=>{
     if (typeof window !== "undefined" && !window.__mm2kFetchPatched) {
       const orig = window.fetch.bind(window);
       window.fetch = (input, init={})=>{
         try {
           const url = typeof input === "string" ? input : (input && input.url) || "";
-          if (url && url.startsWith("/api/admin/")) init = { credentials:"include", ...init };
+          if (url.startsWith("/api/admin/")) init = { credentials:"include", ...init };
         } catch {}
         return orig(input, init);
       };
@@ -94,32 +128,15 @@ export default function App() {
     }
   },[]);
 
-  useEffect(()=>{ if (accountId){ localStorage.setItem(CURRENT_ACCOUNT_KEY, accountId); setUsers(loadUsers(accountId)); setSelectedId(loadUsers(accountId)[0]?.id || null);} },[accountId]);
+  useEffect(()=>{ if (accountId){ localStorage.setItem(CURRENT_ACCOUNT_KEY, accountId); const list=loadUsers(accountId); setUsers(list); setSelectedId(list[0]?.id||null);} },[accountId]);
   useEffect(()=>{ if (accountId) saveUsers(accountId, users); },[accountId, users]);
 
   const selected = useMemo(()=> users.find(u=>u.id===selectedId) || null, [users, selectedId]);
 
-  /* beräkning av vikttabeller + FT-prognos (kortad) */
-  const prescriptions = useMemo(()=>{
-    const out = {};
-    if (!selected) return out;
-    const base = selected.workingRmKg || selected.oneRmKg || 0;
-    const step = selected.rounding || 2.5;
-    for (const w of WORKOUTS) {
-      out[w.id] = w.blocks.map((b, i)=>({
-        label: b.ft ? (i===0? "Block 1" : "Failure Test") : (b.neg? "Negativt 1x1" : `Block ${i+1}`),
-        reps: b.ft ? "FT" : b.r,
-        targetKg: roundTo(base * b.p, step),
-        kind: b.ft ? "failure" : b.neg? "negative" : b.max? "max" : "work",
-      }));
-    }
-    return out;
-  },[selected]);
-
+  // prognos (115% + FT-påslag)
   const projected = useMemo(()=>{
     if (!selected) return null;
-    const start = selected.oneRmKg || 0;
-    const base = roundTo(start * 1.15, 0.5);
+    const base = roundTo((selected.oneRmKg||0) * 1.15, 0.5);
     let delta = 0;
     for (const id of FT_IDS) {
       const reps = selected.logs?.[id]?.failureReps;
@@ -131,29 +148,32 @@ export default function App() {
     return { base, delta, min: base + delta - 2.5*remaining, max: base + delta + 2.5*remaining, remaining };
   },[selected]);
 
-  /* CRUD användare */
+  // CRUD
   function updateSelected(patch){ setUsers(prev=> prev.map(u=> u.id===selectedId ? ({...u, ...patch}) : u)); }
   function addUser(){
-    const u = {
-      id: uid(),
-      name: "Athlete 1",
-      startDate: new Date().toISOString().slice(0,10),
-      oneRmKg: 100, workingRmKg: 100, rounding: 2.5,
-      logs: {}, notes: ""
-    };
-    setUsers(prev=> [...prev, u]); setSelectedId(u.id);
+    const u = { id:uid(), name:"Athlete 1", startDate:new Date().toISOString().slice(0,10), oneRmKg:100, workingRmKg:100, rounding:2.5, logs:{}, notes:"" };
+    setUsers(p=>[...p,u]); setSelectedId(u.id);
   }
-  function removeUser(id){ setUsers(prev=> prev.filter(u=>u.id!==id)); if (selectedId===id) setSelectedId(null); }
+  function removeUser(id){ setUsers(p=>p.filter(u=>u.id!==id)); if (id===selectedId) setSelectedId(null); }
   function writeLog(workoutId, log){ setUsers(prev=> prev.map(u=> u.id!==selectedId ? u : ({...u, logs:{ ...(u.logs||{}), [workoutId]: log }}))); }
+
+  // rader för ett visst pass (med uppvärmning)
+  function getDisplayRows(wid){
+    const w = PROGRAM.find(x=>x.id===wid);
+    if (!w || !selected) return [];
+    const primary = buildPrimaryRows(selected, w);
+    return injectWarmups(selected, primary);
+  }
+
   function markDone(workoutId, done){
     if (!selected) return;
     const current = selected.logs?.[workoutId] || { sets:[] };
-    if (done && !current.lockedRows) current.lockedRows = (prescriptions[workoutId] || []);
+    if (done && !current.lockedRows) current.lockedRows = getDisplayRows(workoutId);
     current.done = !!done; current.doneAt = done ? new Date().toISOString() : null;
     writeLog(workoutId, current);
   }
 
-  /* FT – bekräfta/ångra */
+  // FT – bekräfta/ångra (låser passet automatiskt vid bekräfta)
   function confirmFailure(workoutId){
     const log = selected?.logs?.[workoutId] || {};
     const reps = log.failureReps;
@@ -166,13 +186,11 @@ export default function App() {
 
     const next = roundTo(selected.workingRmKg + delta, 0.5);
     updateSelected({ workingRmKg: next });
-
-    writeLog(workoutId, { ...log, ftApplied:true, ftDelta: delta });
+    writeLog(workoutId, { ...log, ftApplied:true, ftDelta:delta });
 
     const q = getQuote(delta>0? "gold" : delta<0? "bronze" : "silver");
-    setToast({ type:"quote", msg: q.title, sub: q.text });
+    setToast({ type:"quote", msg:q.title, sub:q.text });
 
-    // Lås passet
     markDone(workoutId, true);
   }
   function undoFailure(workoutId){
@@ -183,20 +201,23 @@ export default function App() {
     writeLog(workoutId, { ...log, ftApplied:false, ftDelta:0 });
   }
 
-  /* ----------- server save/load (profiler) ----------- */
+  /* ────────────── spara/ladda profil (server) ────────────── */
   async function saveRemoteProfile(){
     if (!accountId) return;
     const acc = accounts.find(a=>a.id===accountId);
     const blobKey = acc?.blobKey || acc?.id;
+
     setBusy(true);
     try{
+      const profileMeta = { rev:(meta?.rev||0)+1, lastSavedAt:new Date().toISOString() };
+      const body = { blobKey, profile:{ users, profileMeta } }; // VIKTIGT: matchar din backend
       const r = await fetch("/api/profiles/save", {
         method:"POST",
         headers:{ "content-type":"application/json" },
-        body: JSON.stringify({ key: blobKey, users, profileMeta:{ rev:(meta?.rev||0)+1, lastSavedAt: new Date().toISOString() } })
+        body: JSON.stringify(body),
       });
       const j = await safeJson(r);
-      if (r.ok) { setMeta(j?.profileMeta || { rev:(meta?.rev||0)+1, lastSavedAt:new Date().toISOString() }); setToast({type:"up", msg:"Sparat till server"}); }
+      if (r.ok){ setMeta(j?.profileMeta || profileMeta); setToast({type:"up", msg:"Sparat till server"}); }
       else alert(j?.error || "Spara misslyckades");
     } finally { setBusy(false); }
   }
@@ -204,29 +225,29 @@ export default function App() {
     if (!accountId) return;
     const acc = accounts.find(a=>a.id===accountId);
     const blobKey = acc?.blobKey || acc?.id;
+
     setBusy(true);
     try{
       const r = await fetch(`/api/profiles/load?key=${blobKey}`);
       const j = await safeJson(r);
-      if (r.ok) { if (Array.isArray(j?.users)) setUsers(j.users); if (j?.profileMeta) setMeta(j.profileMeta); setToast({type:"up", msg:"Laddat från server"}); }
+      if (r.ok){ if (Array.isArray(j?.users)) setUsers(j.users); if (j?.profileMeta) setMeta(j.profileMeta); setToast({type:"up", msg:"Laddat från server"}); }
       else alert(j?.error || "Ladda misslyckades");
     } finally { setBusy(false); }
   }
-
   async function syncNow(){
-    // enkel: ladda & skriv över om server-rev är nyare, annars spara lokalt till server
     if (!accountId) return;
     const acc = accounts.find(a=>a.id===accountId);
     const blobKey = acc?.blobKey || acc?.id;
+
     setBusy(true);
     try{
       const r = await fetch(`/api/profiles/load?key=${blobKey}`);
-      if (r.ok) {
+      if (r.ok){
         const j = await safeJson(r);
         const rRev = j?.profileMeta?.rev || 0;
         const lRev = meta?.rev || 0;
-        if (rRev > lRev) { if (Array.isArray(j?.users)) setUsers(j.users); if (j?.profileMeta) setMeta(j.profileMeta); setToast({type:"up", msg:"Synk: hämtade från server"}); }
-        else if (rRev < lRev) { await saveRemoteProfile(); }
+        if (rRev > lRev){ if (Array.isArray(j?.users)) setUsers(j.users); if (j?.profileMeta) setMeta(j.profileMeta); setToast({type:"up", msg:"Synk: hämtade från server"}); }
+        else if (rRev < lRev){ await saveRemoteProfile(); }
         else setToast({type:"note", msg:"Synk: inget att göra"});
       } else {
         await saveRemoteProfile();
@@ -234,6 +255,7 @@ export default function App() {
     } finally { setBusy(false); }
   }
 
+  // Historik (snapshots)
   async function openHistory(){
     if (!accountId) return;
     const acc = accounts.find(a=>a.id===accountId);
@@ -242,7 +264,7 @@ export default function App() {
     try{
       const r = await fetch(`/api/profiles/history?key=${blobKey}`);
       const j = await safeJson(r);
-      setHistoryItems(Array.isArray(j?.items) ? j.items : []);
+      setHistoryItems(Array.isArray(j?.items)? j.items : []);
     } finally { setHistoryBusy(false); }
   }
   async function restoreSnapshot(item){
@@ -256,59 +278,54 @@ export default function App() {
     } catch(e){ alert(String(e?.message||e)); }
   }
 
-  /* ----------- admin login/list m.m. (med credentials) ----------- */
+  // Admin-login (med retry)
   async function adminLogin(){
     const code = window.prompt("Admin kod (6 siffror):");
     if (!code) return false;
     try{
       const r = await fetch("/api/admin/login", {
-        method:"POST",
-        headers:{ "content-type":"application/json" },
-        body: JSON.stringify({ code }),
-        credentials: "include",
+        method:"POST", headers:{ "content-type":"application/json" },
+        body: JSON.stringify({ code }), credentials:"include",
       });
-      if (r.status === 204 || r.ok) { setIsAdmin(true); setToast({type:"up", msg:"Adminläge aktiverat"}); return true; }
-      const j = await safeJson(r);
-      alert("Fel kod: " + (j?.error || `${r.status}`));
-      return false;
-    } catch { return false; }
+      if (r.status===204 || r.ok){
+        await new Promise(r=>setTimeout(r,200));
+        const p1 = await fetch("/api/admin/profiles",{credentials:"include"});
+        if (p1.ok){ setIsAdmin(true); setToast({type:"up", msg:"Adminläge aktiverat"}); return true; }
+        await new Promise(r=>setTimeout(r,300));
+        const p2 = await fetch("/api/admin/profiles",{credentials:"include"});
+        if (p2.ok){ setIsAdmin(true); setToast({type:"up", msg:"Adminläge aktiverat"}); return true; }
+        const j = await safeJson(p2); alert("Admin-listning misslyckades: " + (j?.error || `${p2.status}`)); return false;
+      }
+      const j = await safeJson(r); alert("Fel kod: " + (j?.error || `${r.status}`)); return false;
+    } catch { alert("Nätverksfel vid admin-login"); return false; }
   }
   async function adminLogout(){
     try{
-      await fetch("/api/admin/login", {
-        method:"POST",
-        headers:{ "content-type":"application/json" },
-        body: JSON.stringify({ logout:true }),
-        credentials: "include",
-      });
+      await fetch("/api/admin/login", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ logout:true }), credentials:"include" });
     } finally { setIsAdmin(false); setAdminInHistory(false); }
   }
 
-  /* kontomeny: skapa/koppla/ta bort */
+  // kontomeny
   const [showAccountPanel, setShowAccountPanel] = useState(false);
   const [linkPanel, setLinkPanel] = useState(false);
-  const [linkCode, setLinkCode] = useState("");
+  const activeAcc = accounts.find(a=>a.id===accountId);
+  const shareLink = activeAcc ? `${location.origin}${location.pathname}?k=${activeAcc.blobKey||activeAcc.id}` : "";
+  const copyShareLink = ()=>{ navigator.clipboard?.writeText(shareLink); setToast({type:"up", msg:"Delningslänk kopierad"}); };
 
   function createAccount(){
     const id = uid();
-    const acc = { id, label: "Profil", pin:"", blobKey: id };
+    const acc = { id, label:"Profil", pin:"", blobKey:id };
     const list = [...accounts, acc];
     setAccounts(list); saveAccounts(list); setAccountId(id);
   }
   function switchAccount(a){ setAccountId(a.id); setShowAccountPanel(false); }
   function deleteAccount(id){
     if (!confirm("Ta bort profilen lokalt?")) return;
-    setAccounts(prev=> { const n = prev.filter(a=>a.id!==id); saveAccounts(n); return n; });
+    setAccounts(prev=>{ const n=prev.filter(a=>a.id!==id); saveAccounts(n); return n; });
     if (accountId===id) setAccountId(null);
   }
 
-  const activeAcc = accounts.find(a=>a.id===accountId);
-  const shareLink = activeAcc ? `${location.origin}${location.pathname}?k=${activeAcc.blobKey}` : "";
-  function copyShareLink(){ navigator.clipboard?.writeText(shareLink); setToast({ type:"up", msg:"Delningslänk kopierad" }); }
-
-  /* ----------------------- render ----------------------- */
-
-  // login-vy om inget konto valt
+  /* ───────────────────────── UI ───────────────────────── */
   if (!accountId){
     return (
       <div className="min-h-screen grid place-items-center bg-slate-50 text-slate-900 p-6">
@@ -325,7 +342,7 @@ export default function App() {
                   <li key={a.id} className="flex items-center justify-between border rounded-xl p-2">
                     <div>
                       <div className="font-medium">{a.label}</div>
-                      <div className="text-xs text-slate-500">Blob-ID: {a.blobKey.slice(0,8)}…</div>
+                      <div className="text-xs text-slate-500">Blob-ID: {(a.blobKey||a.id).slice(0,8)}…</div>
                     </div>
                     <div className="flex gap-2">
                       <button className={`${BTN_BASE} ${BTN_SUBTLE}`} onClick={()=>switchAccount(a)}>Välj</button>
@@ -351,7 +368,7 @@ export default function App() {
               <LiftEmoji/>
               <div>
                 <h1 className="text-2xl md:text-3xl font-black tracking-tight">MM2K Bench</h1>
-                <p className="text-sm text-white/95">6 veckor, 14 pass, kg-beräkningar, FT-stjärnor, historik + admin via historik</p>
+                <p className="text-sm text-white/95">6 veckor, 14 pass, FT-stjärnor, historik + admin via historik</p>
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -370,7 +387,7 @@ export default function App() {
                         <li key={a.id} className="flex items-center justify-between rounded-lg hover:bg-slate-50 px-2 py-1">
                           <button className="text-left" onClick={()=>switchAccount(a)}>
                             <div className="font-medium">{a.label}</div>
-                            <div className="text-xs text-slate-500">Blob-ID: {a.blobKey.slice(0,8)}…</div>
+                            <div className="text-xs text-slate-500">Blob-ID: {(a.blobKey||a.id).slice(0,8)}…</div>
                           </button>
                           <button className="text-slate-500 hover:text-rose-600" onClick={()=>deleteAccount(a.id)} title="Ta bort">✕</button>
                         </li>
@@ -489,9 +506,9 @@ export default function App() {
               </div>
 
               <div className="grid md:grid-cols-2 gap-6">
-                {WORKOUTS.map(w=>{
+                {PROGRAM.map(w=>{
                   const log = selected.logs?.[w.id] || { sets:[], done:false, failureReps:undefined };
-                  const rows = (log.done && log.lockedRows?.length) ? log.lockedRows : (prescriptions[w.id]||[]);
+                  const displayRows = (log.done && log.lockedRows?.length) ? log.lockedRows : getDisplayRows(w.id);
                   const reps = log.failureReps;
                   const suggestion = (typeof reps==="number" && !Number.isNaN(reps))
                     ? (reps>=8? "increase" : (reps<=3? "decrease":"hold")) : null;
@@ -504,7 +521,7 @@ export default function App() {
                       <header className="flex items-start justify-between mb-2">
                         <div>
                           <h3 className="font-semibold flex items-center gap-2">{w.name}
-                            {rows.some(r=>r.kind==="failure") && (
+                            {displayRows.some(r=>r.kind==="failure") && (
                               <span className="text-xl" title={`FT: ${typeof reps==='number'? reps+' reps':'inte gjort'}`}>{renderStar(starFromReps(reps))}</span>
                             )}
                           </h3>
@@ -525,11 +542,11 @@ export default function App() {
                           <tr className="text-left text-slate-500"><th className="font-medium">Set</th><th className="font-medium">Reps</th><th className="font-medium">Rek. vikt</th><th className="font-medium">Logg</th></tr>
                         </thead>
                         <tbody>
-                          {rows.map((r,idx)=>(
+                          {displayRows.map((r,idx)=>(
                             <tr key={idx} className="align-top">
                               <td className="py-1 pr-2 whitespace-nowrap">{r.label}</td>
                               <td className="py-1 pr-2">{String(r.reps)}</td>
-                              <td className="py-1 pr-2">{r.targetKg} kg</td>
+                              <td className="py-1 pr-2">{r.targetKg} kg{r.kind==="warmup"?" (uppv.)":""}{r.kind==="negative"?" (neg)":""}{r.kind==="max"?" (max)":""}</td>
                               <td className="py-1">
                                 <div className="flex gap-2">
                                   <input type="number" placeholder="kg" className="w-24 rounded-xl border px-2 py-1" value={log.sets?.[idx]?.actualKg ?? ""} disabled={isLocked}
@@ -543,10 +560,10 @@ export default function App() {
                         </tbody>
                       </table>
 
-                      {rows.some(r=>r.kind==="failure") && (
+                      {displayRows.some(r=>r.kind==="failure") && (
                         <div className={`mt-4 rounded-xl ${isLocked? "bg-slate-50 border border-slate-200":"bg-amber-50 border border-amber-200"} p-3`}>
                           <div className="text-sm mb-2 font-medium">Failure Test</div>
-                          <p className="text-sm text-slate-600 mb-2">Max reps med block-2-vikten ({rows[1]?.targetKg} kg). 4–7 reps: ingen ändring. ≤3: −2.5 kg. ≥8: +2.5 kg.</p>
+                          <p className="text-sm text-slate-600 mb-2">Max reps med FT-vikten ({displayRows.find(r=>r.kind==="failure")?.targetKg} kg). 4–7 reps: ingen ändring. ≤3: −2.5 kg. ≥8: +2.5 kg.</p>
                           <div className="flex items-center gap-2 mb-2">
                             <input type="number" placeholder="antal reps" className="rounded-xl border px-3 py-2 w-36" value={log.failureReps ?? ""} disabled={isLocked || log.ftApplied}
                               onChange={e=>writeLog(w.id, { ...log, failureReps:safeNum(e.target.value) })}/>
@@ -567,21 +584,9 @@ export default function App() {
                           )}
                         </div>
                       )}
-
-                      {rows.some(r=>r.kind==="negative") && (<div className="mt-3 text-xs text-slate-600">Negativt set: tung excentrisk 1x1 (~110% av arbets-1RM). Träna säkert med spotter.</div>)}
-                      {rows.some(r=>r.kind==="max") && (<div className="mt-3 text-xs text-slate-600">Max-test: sikta ~115% av start-1RM; FT-utfall kan höja/sänka målet.</div>)}
                     </article>
                   );
                 })}
-              </div>
-
-              <div className="rounded-2xl border shadow-sm bg-white p-4 text-sm text-slate-600">
-                <h3 className="font-semibold mb-2">Tips</h3>
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>Två bänkpass/vecka, 14 totalt.</li>
-                  <li>FT-dagar styr arbets-1RM (±2.5 kg). Negativ-dagar ~110%.</li>
-                  <li>Sista passet siktar kring 115% av start-1RM.</li>
-                </ul>
               </div>
             </>
           )}
@@ -664,7 +669,7 @@ export default function App() {
   );
 }
 
-/* ----------------------- AdminPanel ----------------------- */
+/* ────────────────────── AdminPanel ────────────────────── */
 function AdminPanel(){
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
@@ -676,8 +681,7 @@ function AdminPanel(){
     try{
       const r = await fetch("/api/admin/profiles"+(q?`?q=${encodeURIComponent(q)}`:""), { credentials:"include" });
       const j = await r.json().catch(()=>null);
-      if (r.ok) setRows(j?.items||[]);
-      else throw new Error(j?.error || `${r.status} ${r.statusText}`);
+      if (r.ok) setRows(j?.items||[]); else throw new Error(j?.error || `${r.status}`);
     }catch(e){ alert("Admin-listning misslyckades: " + String(e?.message||e)); }
   })(); },[q]);
 
@@ -773,7 +777,7 @@ function AdminPanel(){
   );
 }
 
-/* ----------------------- UI helpers ----------------------- */
+/* ───────────────── UI-smått ───────────────── */
 function LiftEmoji(){ return (<span className="inline-flex items-center justify-center text-3xl select-none" aria-hidden>🏋️‍♂️</span>); }
 const BTN_BASE = "inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm transition border";
 const BTN_SUBTLE = "bg-white/90 hover:bg-white text-slate-700 border-slate-200";
