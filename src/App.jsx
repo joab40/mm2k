@@ -13,7 +13,7 @@ import { getQuote } from "./quotes.js";
 /****************
  * Versionsinfo
  ****************/
-export const APP_VERSION = "v2025.12.25-06"; // Öka denna när App.jsx uppdateras
+export const APP_VERSION = "v2025.12.25-08"; // Öka denna när App.jsx uppdateras
 
 /****************
  * Utils + Keys
@@ -103,6 +103,17 @@ function renderStar(kind, key){ switch(kind){ case "gold": return <span key={key
 /****************
  * App
  ****************/
+// --- Nätverks‑helper (säker JSON-parsning) ---
+export async function safeJson(r) {
+  try {
+    const ct = r.headers?.get?.("content-type") || "";
+    if (!ct.includes("application/json")) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 export default function App(){
   // Accounts
   const [accounts, setAccounts] = useState(loadAccounts());
