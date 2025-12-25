@@ -13,7 +13,7 @@ import { getQuote } from "./quotes.js";
 /****************
  * Versionsinfo
  ****************/
-export const APP_VERSION = "v2025.12.25-04"; // Öka denna när App.jsx uppdateras
+export const APP_VERSION = "v2025.12.25-05"; // Öka denna när App.jsx uppdateras
 
 /****************
  * Utils + Keys
@@ -199,7 +199,7 @@ export default function App(){
   async function restoreSnapshot(item){ try{ const r=await fetch(item.url); if(!r.ok) throw new Error('Kunde inte hämta snapshot'); const data=await safeJson(r); if(Array.isArray(data.users)) setUsers(data.users); if(data.profileMeta) setMeta(data.profileMeta); setToast({ type:'up', msg:'Återställde snapshot lokalt. Spara till server för att skriva över.'}); } catch(e){ alert(e.message);} }
 
   // Admin login/logout (via Historik)
-  async function adminLogin(){ const code=window.prompt("Admin kod (6 siffror):"); if(!code) return false; try{ const r=await fetch('/api/admin/login',{ method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ code })}); if(r.status===204){ setIsAdmin(true); setToast({ type:'up', msg:'Adminläge aktiverat'}); return true; } else { throw new Error('Fel kod'); } } catch(e){ alert(e.message); return false; } }
+  async function adminLogin(){ const code=window.prompt("Admin kod (6 siffror):"); if(!code) return false; try{ const r=await fetch('/api/admin/login',{ method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ code })}); if (r.status === 204 || r.status === 200 || r.ok){ setIsAdmin(true); setToast({ type:'up', msg:'Adminläge aktiverat'}); return true; } else { throw new Error('Fel kod'); } } catch(e){ alert(e.message); return false; } }
   async function adminLogout(){ try{ await fetch('/api/admin/login',{ method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ logout:true })}); } finally { setIsAdmin(false); setAdminInHistory(false); } }
 
   const activeAcc = accounts.find(a=>a.id===accountId);
@@ -602,7 +602,7 @@ ${link}`); return; }
 ${link}`);
     }
   }
-  async function removeProfile(key){ if(!confirm("Radera hela profilen (inkl. historik)?")) return; const r=await fetch(`/api/admin/profile/${key}`,{ method:"DELETE"}); if(r.status===204){ setRows(rows.filter(x=>x.blobKey!==key)); if(selectedKey===key){ setSelectedKey(null); setSelectedProfile(null);} } }
+  async function removeProfile(key){ if(!confirm("Radera hela profilen (inkl. historik)?")) return; const r=await fetch(`/api/admin/profile/${key}`,{ method:"DELETE"}); if (r.status === 204 || r.status === 200 || r.ok){ setRows(rows.filter(x=>x.blobKey!==key)); if(selectedKey===key){ setSelectedKey(null); setSelectedProfile(null);} } }
   async function openProfile(key){ setSelectedKey(key); setLoading(true); try{ const r=await fetch(`/api/admin/profile/${key}`); if(!r.ok) throw new Error('Kunde inte läsa profilen'); const j=await safeJson(r); setSelectedProfile(j); } catch(e){ alert(e.message);} finally{ setLoading(false);} }
 
   async function patch(op, payload){ if(!selectedKey) return; const r= await fetch(`/api/admin/profile/${selectedKey}`,{ method:"PATCH", headers:{'content-type':'application/json'}, body: JSON.stringify({ op, ...payload})}); if(r.ok){ await openProfile(selectedKey); } }
