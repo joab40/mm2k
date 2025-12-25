@@ -13,7 +13,7 @@ import { getQuote } from "./quotes.js";
 /****************
  * Versionsinfo
  ****************/
-export const APP_VERSION = "v2025.12.25-13"; // Öka denna när App.jsx uppdateras
+export const APP_VERSION = "v2025.12.25-14"; // Öka denna när App.jsx uppdateras
 
 /****************
  * Utils + Keys
@@ -138,7 +138,24 @@ export default function App(){
   const [historyItems, setHistoryItems] = useState([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [adminInHistory, setAdminInHistory] = useState(false);
+const [adminInHistory, setAdminInHistory] = useState(false);
+
+// Ensure cookies always included for admin API calls (same-origin)
+useEffect(()=>{
+  if (typeof window !== 'undefined' && !window.__mm2kFetchPatched) {
+    const orig = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      try {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (url && url.startsWith('/api/admin/')) {
+          init = { credentials: 'include', ...init };
+        }
+      } catch {}
+      return orig(input, init);
+    };
+    window.__mm2kFetchPatched = true;
+  }
+}, []);
   useEffect(()=>{ if(!toast) return; const t=setTimeout(()=>setToast(null), 3000); return ()=>clearTimeout(t); },[toast]);
 
   // Prescriptions for selected
