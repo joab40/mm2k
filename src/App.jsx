@@ -13,7 +13,7 @@ import { getQuote } from "./quotes.js";
 /****************
  * Versionsinfo
  ****************/
-export const APP_VERSION = "v2025.12.25-05"; // Öka denna när App.jsx uppdateras
+export const APP_VERSION = "v2025.12.25-06"; // Öka denna när App.jsx uppdateras
 
 /****************
  * Utils + Keys
