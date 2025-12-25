@@ -1,37 +1,65 @@
+// api/profiles/save.js
 export const config = { runtime: "nodejs" };
+
 import { put } from "@vercel/blob";
+
+const JSON_CT = "application/json; charset=utf-8";
+
+function send(res, status, obj) {
+  res.statusCode = status;
+  res.setHeader("content-type", JSON_CT);
+  res.end(JSON.stringify(obj));
+}
 
 export default async function handler(req, res) {
   try {
-    if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+    if (req.method !== "POST") return send(res, 405, { error: "Method not allowed" });
 
-    const { blobKey, profile } = req.body || {};
-    if (!blobKey || !profile) return res.status(400).json({ error: "missing blobKey/profile" });
+    const { blobKey, profile } = await readJson(req);
+    if (!blobKey || !profile) return send(res, 400, { error: "Missing blobKey or profile" });
 
-    const rev = Number(profile?.profileMeta?.rev) || 0;
-    const body = JSON.stringify(profile);
+    // Bygg sökvägar
+    const base = `profiles/${blobKey}`;
+    const currentPath = `${base}/current.json`;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const snapshotPath = `${base}/history/${ts}.json`;
 
-    // Spara "current"
-    const currentPath = `profiles/${blobKey}/current.json`;
-    await put(currentPath, body, {
-      access: "public",                 // <- viktigt
-      contentType: "application/json",
-      addRandomSuffix: false,
-      token: process.env.BLOB_READ_WRITE_TOKEN
-    });
-
-    // Spara snapshot
-    const snapPath = `profiles/${blobKey}/rev-${rev}.json`;
-    await put(snapPath, body, {
+    // 1) Snapshot (unik fil, ingen overwrite)
+    await put(snapshotPath, JSON.stringify(profile), {
       access: "public",
-      contentType: "application/json",
-      addRandomSuffix: false,
-      token: process.env.BLOB_READ_WRITE_TOKEN
+      contentType: JSON_CT,
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+      addRandomSuffix: false, // ts gör namnet unikt
     });
 
-    return res.status(200).json({ ok: true, currentPath, snapPath, rev });
-  } catch (e) {
-    console.error("SAVE_ERROR", e);
-    return res.status(500).json({ error: String(e?.message || e) });
+    // 2) Skriv/överskriv "current.json"
+    const putRes = await put(currentPath, JSON.stringify(profile), {
+      access: "public",
+      contentType: JSON_CT,
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+      addRandomSuffix: false,
+      allowOverwrite: true, // <-- FIX: tillåt överskrivning
+    });
+
+    return send(res, 200, {
+      ok: true,
+      currentUrl: putRes.url,
+      currentPath,
+      snapshotPath,
+    });
+  } catch (err) {
+    console.error("SAVE_ERROR", err);
+    return send(res, 500, { error: "SAVE_ERROR", message: err?.message || String(err) });
+  }
+}
+
+async function readJson(req) {
+  try {
+    const chunks = [];
+    for await (const ch of req) chunks.push(ch);
+    const text = Buffer.concat(chunks).toString("utf8");
+    return JSON.parse(text || "{}");
+  } catch {
+    return {};
   }
 }
