@@ -1,0 +1,681 @@
+// src/App.jsx
+import React, { useEffect, useMemo, useState } from "react";
+
+/** =========================================================
+ *  MM2K Bench – CSV-tabell → kg · 14 pass · FT & Negativ
+ *  Version: v2025.12.26-02
+ *  ========================================================= */
+
+/* ----------------------------- Utils ----------------------------- */
+
+const KG_PER_LB = 0.45359237;
+const CURRENT_PROFILE_KEY = "mm2k_profile_v1";
+const LOGS_KEY = "mm2k_logs_v1";
+const CSV_CACHE_KEY = "mm2k_csv_cache_v1";
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
+}
+function roundToStep(x, step) {
+  const s = Number(step) || 2.5;
+  return Math.round((Number(x) || 0) / s) * s;
+}
+function toKgFromLb(lb, step) {
+  if (!isFinite(lb)) return null;
+  return roundToStep(lb * KG_PER_LB, step);
+}
+function parseColHeader(h) {
+  // Ex: "1_A", "1-A", "1 A", "1A", "10_C" etc.
+  const s = String(h || "").trim().toUpperCase().replace(/\s+/g, "");
+  // try "W1_A" or "1_A" or "1A"
+  let m = s.match(/^W?(\d+)[_\-]?([ABC])$/);
+  if (m) return { w: Number(m[1]), src: m[2] };
+  // try "1" only (invalid)
+  return null;
+}
+function find1RMHeaderIndex(headers) {
+  // tolerant match for "1RM" or "RM" or "ONE_RM"
+  const idx = headers.findIndex((h) =>
+    /^(\s*ONE)?\s*1?\s*RM\s*$/i.test(String(h || "").replace(/[^a-z0-9]/gi, ""))
+  );
+  if (idx >= 0) return idx;
+  // fallback: first column
+  return 0;
+}
+function nearest(arr, value) {
+  if (!Array.isArray(arr) || !arr.length) return null;
+  let best = arr[0],
+    diff = Math.abs(arr[0] - value);
+  for (let i = 1; i < arr.length; i++) {
+    const d = Math.abs(arr[i] - value);
+    if (d < diff) {
+      diff = d;
+      best = arr[i];
+    }
+  }
+  return best;
+}
+
+/* ----------------------- Program/Pattern ------------------------- */
+/** N = negativt singel på C-kolumnens vikt; F = Failure test på C-vikten (AMRAP) */
+export const FT_IDS = [5, 7, 9, 11];
+
+export const PATTERN = {
+  1:  [ {src:"A", reps:6}, {src:"B", reps:5}, {src:"C", reps:4} ],
+  2:  [ {src:"A", reps:3}, {src:"B", reps:2}, {src:"C", reps:1, type:"negative"} ],
+  3:  [ {src:"A", reps:6}, {src:"B", reps:5}, {src:"C", reps:4} ],
+  4:  [ {src:"A", reps:3}, {src:"B", reps:2}, {src:"C", reps:1, type:"negative"} ],
+  5:  [ {src:"A", reps:6}, {src:"B", reps:5}, {src:"C", reps:"AMRAP", type:"failure"} ],
+  6:  [ {src:"A", reps:3}, {src:"B", reps:2}, {src:"C", reps:1, type:"negative"} ],
+  7:  [ {src:"A", reps:5}, {src:"B", reps:3}, {src:"C", reps:"AMRAP", type:"failure"} ],
+  8:  [ {src:"A", reps:3}, {src:"B", reps:1}, {src:"C", reps:1, type:"negative"} ],
+  9:  [ {src:"A", reps:5}, {src:"B", reps:3}, {src:"C", reps:"AMRAP", type:"failure"} ],
+  10: [ {src:"A", reps:3}, {src:"B", reps:2}, {src:"C", reps:1} ],
+  11: [ {src:"A", reps:5}, {src:"B", reps:3}, {src:"C", reps:"AMRAP", type:"failure"} ],
+  12: [ {src:"A", reps:3}, {src:"B", reps:2}, {src:"C", reps:1} ],
+  13: [ {src:"A", reps:5}, {src:"B", reps:3}, {src:"C", reps:2} ],
+  14: [ {src:"A", reps:3}, {src:"B", reps:2}, {src:"C", reps:1} ],
+};
+
+const WORKOUTS = Array.from({ length: 14 }, (_, i) => i + 1);
+
+/* --------------------------- CSV load ---------------------------- */
+
+function simpleCSVParse(text) {
+  // enkel, citeringstolerant CSV-parser för standardfall
+  const rows = [];
+  let i = 0,
+    cur = [],
+    cell = "",
+    inQ = false;
+
+  function pushCell() {
+    cur.push(cell);
+    cell = "";
+  }
+  function pushRow() {
+    rows.push(cur);
+    cur = [];
+  }
+
+  while (i < text.length) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i += 2;
+          continue;
+        } else {
+          inQ = false;
+          i++;
+          continue;
+        }
+      } else {
+        cell += ch;
+        i++;
+        continue;
+      }
+    } else {
+      if (ch === '"') {
+        inQ = true;
+        i++;
+        continue;
+      }
+      if (ch === ",") {
+        pushCell();
+        i++;
+        continue;
+      }
+      if (ch === "\r") {
+        i++;
+        continue;
+      }
+      if (ch === "\n") {
+        pushCell();
+        pushRow();
+        i++;
+        continue;
+      }
+      cell += ch;
+      i++;
+    }
+  }
+  pushCell();
+  if (cur.length) pushRow();
+  return rows;
+}
+
+async function loadCSV() {
+  // cachea i sessionStorage för snabbare dev-respons
+  try {
+    const cached = sessionStorage.getItem(CSV_CACHE_KEY);
+    if (cached) return JSON.parse(cached);
+  } catch {}
+  const res = await fetch("/mm2k.csv", { cache: "no-store" });
+  const txt = await res.text();
+  const matrix = simpleCSVParse(txt);
+  if (!matrix.length) throw new Error("Tom CSV");
+  const headers = matrix[0].map((h) => String(h || "").trim());
+  const dataRows = matrix.slice(1).filter((r) => r.some((c) => String(c).trim() !== ""));
+  const out = { headers, rows: dataRows };
+  try {
+    sessionStorage.setItem(CSV_CACHE_KEY, JSON.stringify(out));
+  } catch {}
+  return out;
+}
+
+/* ------------------------ Data mapping --------------------------- */
+
+function buildLookupFromCSV(headers, rows) {
+  // Map: 1RM(lb) -> workoutId -> { A: lb, B: lb, C: lb }
+  const rmIdx = find1RMHeaderIndex(headers);
+  const colInfo = headers.map(parseColHeader); // array of {w, src} | null
+
+  const lookup = new Map(); // key: rmLb number, val: Map(workoutId -> {A,B,C})
+  for (const r of rows) {
+    const rmLb = Number(String(r[rmIdx]).replace(",", "."));
+    if (!isFinite(rmLb)) continue;
+    const perW = new Map();
+    for (let j = 0; j < headers.length; j++) {
+      if (j === rmIdx) continue;
+      const info = colInfo[j];
+      if (!info) continue;
+      const raw = String(r[j] ?? "").trim();
+      if (!raw) continue;
+      const lb = Number(raw.replace(",", "."));
+      if (!isFinite(lb)) continue;
+      if (!perW.has(info.w)) perW.set(info.w, { A: null, B: null, C: null });
+      perW.get(info.w)[info.src] = lb;
+    }
+    lookup.set(rmLb, perW);
+  }
+
+  const rmValues = Array.from(lookup.keys()).sort((a, b) => a - b);
+  return { lookup, rmValues };
+}
+
+function recommendedKg(lookupObj, workRmKg, step, workoutId, src) {
+  const { lookup, rmValues } = lookupObj || {};
+  if (!lookup || !rmValues?.length) return null;
+  const wantLb = workRmKg / KG_PER_LB;
+  const rmLb = nearest(rmValues, wantLb);
+  if (rmLb == null) return null;
+  const perW = lookup.get(rmLb);
+  const trio = perW?.get(workoutId);
+  const lb = trio?.[src] ?? null;
+  if (!isFinite(lb)) return null;
+  return toKgFromLb(lb, step);
+}
+
+/* ------------------------ FT-stjärnor ---------------------------- */
+
+function starKindFromReps(val) {
+  const n = Number(val);
+  if (!isFinite(n)) return "none";
+  if (n >= 8) return "gold";
+  if (n >= 4) return "silver";
+  return "bronze";
+}
+function Star({ kind }) {
+  switch (kind) {
+    case "gold":
+      return <span className="text-amber-500">★</span>;
+    case "silver":
+      return <span className="text-slate-400">★</span>;
+    case "bronze":
+      return <span className="text-orange-600">★</span>;
+    default:
+      return <span className="text-slate-300/60">☆</span>;
+  }
+}
+function ftDeltaFromReps(reps) {
+  if (!isFinite(reps)) return 0;
+  if (reps >= 8) return 2.5;
+  if (reps <= 3) return -2.5;
+  return 0;
+}
+
+/* ---------------------------- App ------------------------------- */
+
+export default function App() {
+  /* Profil */
+  const [profile, setProfile] = useState(() => {
+    try {
+      return (
+        JSON.parse(localStorage.getItem(CURRENT_PROFILE_KEY)) || {
+          id: uid(),
+          name: "Athlete 1",
+          startDate: new Date().toISOString().slice(0, 10),
+          oneRmKg: 100,
+          workRmKg: 100,
+          rounding: 2.5,
+          notes: "",
+        }
+      );
+    } catch {
+      return {
+        id: uid(),
+        name: "Athlete 1",
+        startDate: new Date().toISOString().slice(0, 10),
+        oneRmKg: 100,
+        workRmKg: 100,
+        rounding: 2.5,
+        notes: "",
+      };
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem(CURRENT_PROFILE_KEY, JSON.stringify(profile));
+  }, [profile]);
+
+  /* Loggar per pass */
+  const [logs, setLogs] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(LOGS_KEY)) || {};
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem(LOGS_KEY, JSON.stringify(logs));
+  }, [logs]);
+
+  /* CSV */
+  const [csv, setCsv] = useState(null); // {headers, rows}
+  const [lookup, setLookup] = useState(null); // {lookup, rmValues}
+  const [csvError, setCsvError] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const c = await loadCSV();
+        setCsv(c);
+        setLookup(buildLookupFromCSV(c.headers, c.rows));
+        setCsvError(null);
+      } catch (e) {
+        console.error(e);
+        setCsvError(
+          "Kunde inte läsa /mm2k.csv. Appen fungerar ändå – vikter visas “—” tills CSV finns."
+        );
+      }
+    })();
+  }, []);
+
+  /* Härledda värden */
+  const ftStars = useMemo(() => {
+    return FT_IDS.map((id) => starKindFromReps(logs[id]?.failureReps));
+  }, [logs]);
+
+  /* Handlers */
+  function updateProfile(patch) {
+    setProfile((p) => ({ ...p, ...patch }));
+  }
+  function resetWorkRm() {
+    updateProfile({ workRmKg: profile.oneRmKg });
+  }
+  function clearLogs() {
+    if (!confirm("Rensa alla loggar?")) return;
+    setLogs({});
+  }
+
+  function markDone(workoutId, done = true) {
+    setLogs((prev) => {
+      const cur = prev[workoutId] || {};
+      if (done) {
+        // lås dagens rader som de rekommenderas just nu
+        const rows = PATTERN[workoutId] || [];
+        const locked = rows.map((row) => {
+          const kg = recommendedKg(
+            lookup,
+            profile.workRmKg,
+            profile.rounding,
+            workoutId,
+            row.src
+          );
+          return { actualKg: kg ?? "", reps: row.reps === "AMRAP" ? "" : Number(row.reps) || "" };
+        });
+        return {
+          ...prev,
+          [workoutId]: {
+            ...cur,
+            done: true,
+            doneAt: new Date().toISOString(),
+            locked: locked,
+          },
+        };
+      } else {
+        // lås upp
+        const { locked, doneAt, ...rest } = cur;
+        return { ...prev, [workoutId]: { ...rest, done: false } };
+      }
+    });
+  }
+
+  function updateSet(workoutId, setIdx, field, value) {
+    setLogs((prev) => {
+      const cur = prev[workoutId] || {};
+      const list = Array.isArray(cur.locked) ? [...cur.locked] : [];
+      list[setIdx] = { ...(list[setIdx] || {}), [field]: value };
+      return { ...prev, [workoutId]: { ...cur, locked: list } };
+    });
+  }
+
+  function confirmFT(workoutId) {
+    const lg = logs[workoutId] || {};
+    if (lg.ftApplied) return alert("Failure test redan bekräftat för detta pass.");
+    const reps = Number(lg.failureReps);
+    if (!isFinite(reps)) return alert("Ange antal reps för FT (AMRAP).");
+    const delta = ftDeltaFromReps(reps);
+
+    // Markera klart (låser passet) om det inte redan är klart
+    if (!lg.done) markDone(workoutId, true);
+
+    // applicera FT-delta på arbets-1RM och lås FT
+    updateProfile({ workRmKg: roundToStep(profile.workRmKg + delta, 0.5) });
+    setLogs((prev) => ({
+      ...prev,
+      [workoutId]: { ...(prev[workoutId] || {}), ftApplied: true, ftDelta: delta },
+    }));
+  }
+  function undoFT(workoutId) {
+    const lg = logs[workoutId] || {};
+    if (!lg.ftApplied) return alert("Ingen FT att ångra för detta pass.");
+    // räkna om arbets-1RM baserat på övriga FT som redan är låsta
+    let next = profile.oneRmKg;
+    for (const id of FT_IDS) {
+      if (id === workoutId) continue;
+      const other = logs[id];
+      if (other?.ftApplied) next += Number(other.ftDelta || 0);
+    }
+    updateProfile({ workRmKg: roundToStep(next, 0.5) });
+    setLogs((prev) => ({
+      ...prev,
+      [workoutId]: { ...(prev[workoutId] || {}), ftApplied: false, ftDelta: undefined },
+    }));
+  }
+
+  /* Render helpers */
+
+  function cellRecommendedKg(workoutId, rowSrc) {
+    const kg = recommendedKg(
+      lookup,
+      profile.workRmKg,
+      profile.rounding,
+      workoutId,
+      rowSrc
+    );
+    return isFinite(kg) ? `${kg} kg` : "—";
+    // If CSV saknas → "—"
+  }
+
+  function WorkoutCard({ wid }) {
+    const def = PATTERN[wid] || [];
+    const lg = logs[wid] || {};
+    const locked = Boolean(lg.done);
+    return (
+      <article
+        className={`rounded-2xl border shadow-sm bg-white p-4 ${
+          locked ? "ring-2 ring-emerald-500/30" : ""
+        }`}
+      >
+        <header className="flex items-center justify-between mb-2">
+          <div>
+            <h3 className="font-semibold">#{wid}</h3>
+            <p className="text-xs text-slate-500">
+              Beräknat från arbets-1RM {profile.workRmKg} kg
+              {lg.doneAt ? ` · låst ${new Date(lg.doneAt).toLocaleDateString()}` : ""}
+            </p>
+            {lg.ftApplied && (
+              <div className="mt-1 inline-flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-0.5">
+                FT bekräftad {lg.ftDelta > 0 ? `(+${lg.ftDelta} kg)` : lg.ftDelta < 0 ? `(${lg.ftDelta} kg)` : "(±0 kg)"}
+              </div>
+            )}
+          </div>
+          <button
+            className={`inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm transition border ${
+              locked
+                ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700"
+                : "bg-white/90 hover:bg-white text-slate-700 border-slate-200"
+            }`}
+            onClick={() => markDone(wid, !locked)}
+          >
+            {locked ? "Klart" : "Markera klart"}
+          </button>
+        </header>
+
+        <table className="w-full text-sm border-separate" style={{ borderSpacing: "0 6px" }}>
+          <thead>
+            <tr className="text-left text-slate-500">
+              <th className="font-medium">Set</th>
+              <th className="font-medium">Reps</th>
+              <th className="font-medium">Rek. vikt</th>
+              <th className="font-medium">Logg</th>
+            </tr>
+          </thead>
+          <tbody>
+            {def.map((row, idx) => {
+              const rec = cellRecommendedKg(wid, row.src);
+              const lockRow = (lg.locked || [])[idx] || {};
+              const isFT = row.type === "failure";
+              const isNeg = row.type === "negative";
+              return (
+                <tr key={idx} className="align-top">
+                  <td className="py-1 pr-2 whitespace-nowrap">{row.src}{isNeg ? " (N)" : isFT ? " (F)" : ""}</td>
+                  <td className="py-1 pr-2">{String(row.reps)}</td>
+                  <td className="py-1 pr-2">{rec}</td>
+                  <td className="py-1">
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        placeholder="kg"
+                        className="w-24 rounded-xl border px-2 py-1"
+                        value={lockRow.actualKg ?? ""}
+                        disabled={!locked}
+                        onChange={(e) => updateSet(wid, idx, "actualKg", Number(e.target.value || 0))}
+                      />
+                      <input
+                        type="number"
+                        placeholder="reps"
+                        className="w-20 rounded-xl border px-2 py-1"
+                        value={lockRow.reps ?? ""}
+                        disabled={!locked || isFT} // FT har egen ruta nedan
+                        onChange={(e) => updateSet(wid, idx, "reps", Number(e.target.value || 0))}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {/* FT-panel där det finns F */}
+        {def.some((r) => r.type === "failure") && (
+          <div
+            className={`mt-4 rounded-xl ${
+              locked ? "bg-slate-50 border border-slate-200" : "bg-amber-50 border border-amber-200"
+            } p-3`}
+          >
+            <div className="text-sm mb-2 font-medium">Failure Test</div>
+            <p className="text-sm text-slate-600 mb-2">
+              AMRAP på <b>C-vikten</b>. ≤3: −2.5 kg · 4–7: ±0 · ≥8: +2.5 kg.
+            </p>
+            <div className="flex items-center gap-2 mb-2">
+              <input
+                type="number"
+                placeholder="antal reps"
+                className="rounded-xl border px-3 py-2 w-36"
+                value={lg.failureReps ?? ""}
+                disabled={!!lg.ftApplied}
+                onChange={(e) =>
+                  setLogs((prev) => ({
+                    ...prev,
+                    [wid]: { ...(prev[wid] || {}), failureReps: Number(e.target.value || 0) },
+                  }))
+                }
+              />
+              {!lg.ftApplied ? (
+                <button
+                  className="inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm transition border bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700"
+                  onClick={() => confirmFT(wid)}
+                >
+                  Bekräfta FT
+                </button>
+              ) : (
+                <button
+                  className="inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm transition border bg-white/90 hover:bg-white text-slate-700 border-slate-200"
+                  onClick={() => undoFT(wid)}
+                >
+                  Ångra FT
+                </button>
+              )}
+            </div>
+            {locked ? (
+              <div className="text-xs text-slate-600">Passet är låst.</div>
+            ) : (
+              <div className="text-xs text-slate-600">Tips: Markera "Klart" när du är nöjd med loggen.</div>
+            )}
+          </div>
+        )}
+
+        {/* Negativ-info */}
+        {def.some((r) => r.type === "negative") && (
+          <div className="mt-3 text-xs text-slate-600">
+            Negativt set: tung excentrisk 1×1. Träna säkert och med spotter.
+          </div>
+        )}
+      </article>
+    );
+  }
+
+  return (
+    <div className="min-h-screen w-full bg-slate-50 text-slate-900">
+      {/* Topbar */}
+      <header className="sticky top-0 z-10 border-b border-slate-200">
+        <div className="bg-gradient-to-r from-violet-900 via-indigo-900 to-sky-900 text-white">
+          <div className="mx-auto max-w-6xl px-4 py-5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-3xl">🏋️‍♂️</span>
+              <div>
+                <h1 className="text-2xl md:text-3xl font-black tracking-tight">MM2K Bench</h1>
+                <p className="text-sm md:text-base text-white/95">CSV-tabell → kg · 14 pass · FT & Negativ</p>
+              </div>
+            </div>
+            <div className="text-xs text-white/80">App v2025.12.26-02</div>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-6 grid md:grid-cols-[320px,1fr] gap-6">
+        {/* Vänsterpanel – profil */}
+        <aside className="bg-white rounded-2xl shadow-sm border p-4 h-fit">
+          <h2 className="text-lg font-semibold mb-3">Profil</h2>
+          <div className="grid gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-sm text-slate-600">Namn</span>
+              <input
+                className="rounded-xl border px-3 py-2"
+                value={profile.name}
+                onChange={(e) => updateProfile({ name: e.target.value })}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-sm text-slate-600">Startdatum</span>
+              <input
+                type="date"
+                className="rounded-xl border px-3 py-2"
+                value={profile.startDate}
+                onChange={(e) => updateProfile({ startDate: e.target.value })}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-sm text-slate-600">1RM (kg)</span>
+              <input
+                type="number"
+                className="rounded-xl border px-3 py-2"
+                value={profile.oneRmKg}
+                onChange={(e) => {
+                  const v = Number(e.target.value || 0);
+                  updateProfile({ oneRmKg: v, workRmKg: v });
+                }}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-sm text-slate-600">Arbets-1RM (kg)</span>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  className="rounded-xl border px-3 py-2 grow"
+                  value={profile.workRmKg}
+                  onChange={(e) => updateProfile({ workRmKg: Number(e.target.value || 0) })}
+                />
+                <button
+                  className="inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm transition border bg-white/90 hover:bg-white text-slate-700 border-slate-200"
+                  onClick={resetWorkRm}
+                >
+                  Reset
+                </button>
+              </div>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-sm text-slate-600">Avrundning (kg-steg)</span>
+              <select
+                className="rounded-xl border px-3 py-2"
+                value={profile.rounding}
+                onChange={(e) => updateProfile({ rounding: Number(e.target.value) })}
+              >
+                {[0.5, 1, 1.25, 2, 2.5, 5].map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="rounded-xl border p-3 bg-white text-sm flex items-center justify-between">
+              <div className="font-medium">Failure-stjärnor</div>
+              <div className="flex gap-1 text-xl">
+                {ftStars.map((k, i) => (
+                  <Star key={i} kind={k} />
+                ))}
+              </div>
+            </div>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-sm text-slate-600">Anteckningar</span>
+              <textarea
+                rows={3}
+                className="rounded-xl border px-3 py-2"
+                value={profile.notes}
+                onChange={(e) => updateProfile({ notes: e.target.value })}
+              />
+            </label>
+
+            <button
+              className="inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm transition border bg-white/90 hover:bg-white text-slate-700 border-slate-200"
+              onClick={clearLogs}
+            >
+              Rensa loggar
+            </button>
+
+            {csvError && (
+              <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-xl p-2">
+                {csvError}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        {/* Höger – workouts */}
+        <section className="space-y-6">
+          <div className="grid md:grid-cols-2 gap-6">
+            {WORKOUTS.map((wid) => (
+              <WorkoutCard key={wid} wid={wid} />
+            ))}
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
